@@ -1,8 +1,11 @@
 {
-  "name": "tsest",
+  "name": "striketac",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "StrikeTac Tactical Airsoft Server",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "start": "node server.js",
     "test": "node test-integration.js"
