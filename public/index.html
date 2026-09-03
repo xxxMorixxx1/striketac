@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>StrikeTac - Тактический навигатор для страйкбола</title>
+  
+  <meta name="theme-color" content="#0a0d14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="Тактический GPS-трекер для страйкбола с загрузкой KMZ, системой респауна Вертолет и ролями капитанов">
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Шрифты для тактического военного интерфейса -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700;800&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet">
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <!-- Тактические стили StrikeTac -->
+  <link rel="stylesheet" href="css/tactical.css">
+</head>
+<body>
+
+  <div id="app-container">
+
+    <!-- ВЕРХНЯЯ СТРОКА ТАКТИЧЕСКОГО HUD -->
+    <header class="hud-header">
+      <div class="hud-left">
+        <div class="hud-logo">
+          <span>⚡</span> STRIKETAC
+        </div>
+        <div class="hud-lobby-badge" id="hud-lobby-code">НЕТ ИГРЫ</div>
+      </div>
+
+      <div class="hud-center">
+        <div class="player-badge" id="hud-player-badge" style="display: none;">
+          <span class="role-icon" id="hud-role-icon">👤</span>
+          <span id="hud-callsign-display">Боец</span>
+        </div>
+      </div>
+
+      <div class="hud-right">
+        <div class="status-dot" id="net-status-dot" title="Связь с сервером"></div>
+        <button class="hud-btn" id="btn-layer-toggle" title="Переключить спутник / схему">
+          🛰️ <span style="font-size: 10px;">СЛОЙ</span>
+        </button>
+        <button class="hud-btn" id="btn-menu" title="Настройки и меню">
+          ☰
+        </button>
+      </div>
+    </header>
+
+    <!-- ИНФО-БАННЕР МЕРТВЯКА И СИСТЕМЫ ВЕРТОЛЕТ -->
+    <div id="respawn-banner" class="respawn-banner hidden">
+      <div>
+        <div class="respawn-info-title" id="respawn-desc-display">СИСТЕМА РЕСПАУНА</div>
+        <div class="respawn-timer-big" id="respawn-timer-display">--:--</div>
+      </div>
+      <button class="btn-confirm-exit" id="btn-respawn-exit" style="display: none;">
+        ПОДТВЕРДИТЬ ВЫХОД
+      </button>
+    </div>
+
+    <!-- КАРТА LEAFLET -->
+    <div id="map"></div>
+
+    <!-- ПЛАВАЮЩИЕ КНОПКИ УПРАВЛЕНИЯ КАРТОЙ (СПРАВА) -->
+    <div class="tactical-floating-actions">
+      <!-- Центрирование на себе -->
+      <button class="floating-btn active" id="btn-gps-follow" title="Следить за моим GPS">
+        🎯
+      </button>
+      <!-- Добавить тактическую метку (для капитана/орга) -->
+      <button class="floating-btn" id="btn-add-tactical" style="display: none;" title="Поставить тактическую метку">
+        📍
+      </button>
+      <!-- Панель организатора -->
+      <button class="floating-btn" id="btn-organizer-panel" style="display: none;" title="Панель организатора">
+        ⚙️
+      </button>
+    </div>
+
+    <!-- НИЖНЯЯ ПАНЕЛЬ СТАТУСА БОЙЦА (КРУПНЫЕ КНОПКИ ПОД ПЕРЧАТКИ) -->
+    <div class="status-bar" id="status-bar" style="display: none;">
+      <button class="status-btn alive active" data-status="alive">
+        <span class="status-icon">🟢</span>
+        <span>В БОЮ</span>
+      </button>
+      <button class="status-btn hit" data-status="hit">
+        <span class="status-icon">💀</span>
+        <span>ПОРАЖЕН</span>
+      </button>
+      <button class="status-btn respawn" data-status="respawn">
+        <span class="status-icon">⌛</span>
+        <span>МЕРТВЯК</span>
+      </button>
+      <button class="status-btn malfunction" data-status="malfunction">
+        <span class="status-icon">🛠️</span>
+        <span>СХОД / КЛИН</span>
+      </button>
+    </div>
+
+  </div>
+
+  <!-- ==================== МОДАЛЬНЫЕ ОКНА ==================== -->
+
+  <!-- 1. МОДАЛ ВХОДА / СОЗДАНИЯ ИГРЫ -->
+  <div class="modal-overlay" id="modal-auth">
+    <div class="modal-card">
+      <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center;">
+        <div class="modal-title">
+          <span>🎯</span> ВХОД В ТАКТИЧЕСКУЮ СЕТЬ
+        </div>
+        <button id="btn-toggle-server-settings" type="button" class="hud-btn" style="padding: 4px 8px; font-size: 11px;" title="Настройка сервера">
+          🌐 СЕРВЕР
+        </button>
+      </div>
+
+      <!-- Панель настройки адреса облачного сервера -->
+      <div id="server-settings-panel" style="display: none; padding: 10px 16px; background: rgba(0, 255, 157, 0.05); border-bottom: 1px solid var(--border-color); font-size: 12px;">
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <label class="form-label" style="margin: 0; font-size: 11px;">Адрес тактического сервера (Облако / URL):</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="input-custom-server-url" class="form-input" placeholder="https://striketac.onrender.com" style="font-size: 12px; padding: 6px 10px;">
+            <button id="btn-save-server-url" type="button" class="btn-secondary" style="padding: 6px 12px; font-size: 11px; white-space: nowrap;">
+              Сохранить
+            </button>
+          </div>
+          <div id="server-conn-status" style="font-size: 10px; color: var(--text-dim);">Статус: Авто-подключение</div>
+        </div>
+      </div>
+
+      <!-- Вкладки: Вход / Создание -->
+      <div style="display: flex; border-bottom: 1px solid var(--border-color);">
+        <button class="hud-btn active" id="tab-btn-join" style="flex: 1; border-radius: 0; border: none; border-bottom: 2px solid var(--color-green); padding: 12px; font-weight: 700;">
+          ПОДКЛЮЧИТЬСЯ
+        </button>
+        <button class="hud-btn" id="tab-btn-create" style="flex: 1; border-radius: 0; border: none; padding: 12px; font-weight: 700;">
+          СОЗДАТЬ ИГРУ (ОРГ)
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <!-- ФОРМА ВХОДА -->
+        <form id="form-join" style="display: flex; flex-direction: column; gap: 12px;">
+          <div class="form-group">
+            <label class="form-label">Код лобби игры</label>
+            <input type="text" id="input-join-code" class="form-input" placeholder="Например: ALPHA1" maxlength="10" required autocomplete="off" style="text-transform: uppercase; font-weight: 700; letter-spacing: 2px;">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Ваш позывной</label>
+            <input type="text" id="input-join-callsign" class="form-input" placeholder="Например: Ворон, Шмель" maxlength="20" required>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Выберите сторону</label>
+            <div class="teams-grid" id="join-teams-list">
+              <div class="team-card-option selected" data-team="yellow" style="--team-color: #f59e0b; --team-color-glow: rgba(245, 158, 11, 0.4);">
+                <div class="team-color-indicator"></div>
+                <div class="team-card-title">Желтые</div>
+              </div>
+              <div class="team-card-option" data-team="blue" style="--team-color: #06b6d4; --team-color-glow: rgba(6, 182, 212, 0.4);">
+                <div class="team-color-indicator"></div>
+                <div class="team-card-title">Синие</div>
+              </div>
+              <div class="team-card-option" data-team="green" style="--team-color: #10b981; --team-color-glow: rgba(16, 185, 129, 0.4);">
+                <div class="team-color-indicator"></div>
+                <div class="team-card-title">Зеленые</div>
+              </div>
+              <div class="team-card-option" data-team="red" style="--team-color: #ef4444; --team-color-glow: rgba(239, 68, 68, 0.4);">
+                <div class="team-color-indicator"></div>
+                <div class="team-card-title">Красные</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Пароль (если задан оргом)</label>
+            <input type="password" id="input-join-password" class="form-input" placeholder="Необязательно">
+          </div>
+
+          <button type="submit" class="btn-primary" style="margin-top: 8px;">
+            ВОЙТИ В ИГРУ ⚡
+          </button>
+        </form>
+
+        <!-- ФОРМА СОЗДАНИЯ НОВОГО ЛОББИ -->
+        <form id="form-create" style="display: none; flex-direction: column; gap: 12px;">
+          <div class="form-group">
+            <label class="form-label">Название игры / Полигона</label>
+            <input type="text" id="input-create-name" class="form-input" placeholder="Например: Операция Дубки" required>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Код игры (для подключения)</label>
+            <input type="text" id="input-create-code" class="form-input" placeholder="Оставьте пустым для автокода" maxlength="10" style="text-transform: uppercase;">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Позывной организатора</label>
+            <input type="text" id="input-create-callsign" class="form-input" placeholder="Главмастер" required>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Режим мертвяка</label>
+            <select id="select-respawn-mode" class="form-select">
+              <option value="helicopter">Система «Вертолет» (волны выхода)</option>
+              <option value="timer">Индивидуальный таймер отсидки</option>
+              <option value="instant">Без отсидки (коснулся базы и в бой)</option>
+            </select>
+          </div>
+
+          <div class="form-group" id="group-helicopter-interval">
+            <label class="form-label">Интервал прилета вертолета (минут)</label>
+            <select id="select-helicopter-interval" class="form-select">
+              <option value="10">Каждые 10 минут</option>
+              <option value="15" selected>Каждые 15 минут (:00, :15, :30, :45)</option>
+              <option value="20">Каждые 20 минут (:00, :20, :40)</option>
+              <option value="30">Каждые 30 минут (:00, :30)</option>
+            </select>
+          </div>
+
+          <div class="form-group" id="group-timer-minutes" style="display: none;">
+            <label class="form-label">Время индивидуальной отсидки (минут)</label>
+            <input type="number" id="input-timer-minutes" class="form-input" value="15" min="1" max="120">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Файл KMZ с границами полигона (можно загрузить позже)</label>
+            <input type="file" id="input-create-kmz" class="form-input" accept=".kmz,.kml">
+          </div>
+
+          <button type="submit" class="btn-primary" style="margin-top: 8px;">
+            СОЗДАТЬ ЛОББИ И СТАТЬ ХОСТОМ 👑
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. МОДАЛ ПАНЕЛИ ОРГАНИЗАТОРА (Управление KMZ, игроками и капитанами) -->
+  <div class="modal-overlay hidden" id="modal-organizer">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span>👑</span> ШТАБ ОРГАНИЗАТОРА
+        </div>
+        <button class="modal-close-btn" id="btn-close-organizer">&times;</button>
+      </div>
+      <div class="modal-body">
+        
+        <!-- Секция загрузки KMZ -->
+        <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
+          <div style="font-weight: 700; font-size: 13px; margin-bottom: 6px; color: var(--color-green);">
+            🗺️ ЗАГРУЗКА КАРТЫ ПОЛИГОНА (KMZ / KML)
+          </div>
+          <div style="font-size: 11px; color: var(--text-dim); margin-bottom: 8px;">
+            Загруженный файл автоматически раздастся всем бойцам и сохранится на их устройства локально.
+          </div>
+          <input type="file" id="input-upload-kmz-field" class="form-input" accept=".kmz,.kml">
+          <div id="kmz-status-text" style="margin-top: 6px; font-size: 11px; color: var(--color-green);"></div>
+        </div>
+
+        <!-- Секция бойцов и назначения капитанов -->
+        <div>
+          <div style="font-weight: 700; font-size: 13px; margin-bottom: 8px; color: var(--color-blue);">
+            👥 БОЙЦЫ В ИГРЕ И НАЗНАЧЕНИЕ КАПИТАНОВ
+          </div>
+          <div id="organizer-players-list" style="display: flex; flex-direction: column; gap: 6px;">
+            <!-- Список игроков рендерится через JS -->
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. МОДАЛ УСТАНОВКИ ТАКТИЧЕСКОЙ МЕТКИ (Капитан / Орг) -->
+  <div class="modal-overlay hidden" id="modal-tactical-marker">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span>📍</span> НОВАЯ ТАКТИЧЕСКАЯ МЕТКА
+        </div>
+        <button class="modal-close-btn" id="btn-close-tactical">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Тип метки / Приказ</label>
+          <select id="select-marker-type" class="form-select">
+            <option value="enemy">🎯 Враг замечен (Контакт!)</option>
+            <option value="attack">⚔️ Атака сюда (Штурм)</option>
+            <option value="defend">🛡️ Оборона рубежа (Держать позицию)</option>
+            <option value="rally">📍 Точка сбора отделения</option>
+            <option value="sos">🆘 Нужна помощь! (SOS)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Комментарий / Ориентир</label>
+          <input type="text" id="input-marker-desc" class="form-input" placeholder="Например: 2 бойца у вышки, кусты">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Позиция на карте</label>
+          <select id="select-marker-pos" class="form-select">
+            <option value="center">По центру экрана карты</option>
+            <option value="gps">По моим текущим координатам GPS</option>
+          </select>
+        </div>
+
+        <button class="btn-primary" id="btn-submit-tactical-marker" style="margin-top: 8px;">
+          ОТПРАВИТЬ МЕТКУ ВСЕМ СОЮЗНИКАМ 📍
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- КОНТЕЙНЕР ДЛЯ ВСПЛЫВАЮЩИХ УВЕДОМЛЕНИЙ -->
+  <div id="toast-container"></div>
+
+  <!-- Скрипты -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  
+  <script src="js/storage.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/gps.js"></script>
+  <script src="js/respawn.js"></script>
+  <script src="js/map.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

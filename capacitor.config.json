@@ -1,0 +1,14 @@
+{
+  "appId": "com.striketac.app",
+  "appName": "StrikeTac",
+  "webDir": "public",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "plugins": {
+    "Geolocation": {
+      "permissions": ["location", "coarseLocation"]
+    }
+  }
+}

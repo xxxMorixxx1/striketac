@@ -1,0 +1,713 @@
+/* =========================================================
+   STRIKETAC - TACTICAL AIRSOFT HUD STYLES
+   Оптимизировано для яркого солнца, темного режима и игры в перчатках
+   ========================================================= */
+
+:root {
+  --bg-primary: #0a0d14;
+  --bg-secondary: #121824;
+  --bg-card: rgba(18, 24, 36, 0.92);
+  --bg-glass: rgba(15, 21, 32, 0.85);
+  
+  --border-color: #24324a;
+  --border-glow: rgba(0, 255, 157, 0.4);
+  
+  --color-green: #00ff9d;
+  --color-green-dark: #008f58;
+  --color-red: #ff334b;
+  --color-red-dark: #990f20;
+  --color-blue: #00bfff;
+  --color-yellow: #ffb700;
+  --color-amber: #f59e0b;
+  --color-gray: #6b7280;
+  
+  --text-main: #f3f4f6;
+  --text-dim: #9ca3af;
+  --text-accent: #00ff9d;
+  
+  --font-hud: 'Chakra Petch', 'Rajdhani', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+body, html {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-primary);
+  color: var(--text-main);
+  font-family: var(--font-hud);
+  font-size: 14px;
+}
+
+/* ================== ГЛАВНЫЙ ЭКРАН ПРИЛОЖЕНИЯ ================== */
+#app-container {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ================== ВЕРХНИЙ ХЕДЕР ТАКТИЧЕСКОГО HUD ================== */
+.hud-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-color);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+}
+
+.hud-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hud-logo {
+  font-weight: 800;
+  font-size: 16px;
+  letter-spacing: 1.5px;
+  color: var(--color-green);
+  text-shadow: 0 0 10px rgba(0, 255, 157, 0.5);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.hud-lobby-badge {
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid var(--border-color);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: monospace;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+}
+
+.hud-center {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.player-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--team-color, var(--color-green));
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+}
+
+.player-badge .role-icon {
+  font-size: 13px;
+}
+
+.hud-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hud-btn {
+  background: rgba(18, 24, 36, 0.8);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+}
+
+.hud-btn:active {
+  transform: scale(0.95);
+  background: var(--border-color);
+}
+
+.hud-btn.active {
+  background: rgba(0, 255, 157, 0.2);
+  border-color: var(--color-green);
+  color: var(--color-green);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-green);
+  box-shadow: 0 0 8px var(--color-green);
+}
+
+.status-dot.offline {
+  background: var(--color-red);
+  box-shadow: 0 0 8px var(--color-red);
+}
+
+/* ================== КАРТА (LEAFLET) ================== */
+#map {
+  width: 100%;
+  height: 100%;
+  background: #090c10;
+  z-index: 1;
+}
+
+/* Стилизация элементов карты Leaflet под HUD */
+.leaflet-control-zoom {
+  border: 1px solid var(--border-color) !important;
+  background: var(--bg-glass) !important;
+  backdrop-filter: blur(8px) !important;
+  border-radius: 8px !important;
+  overflow: hidden;
+  margin-top: 60px !important;
+}
+
+.leaflet-control-zoom a {
+  background: var(--bg-secondary) !important;
+  color: var(--text-main) !important;
+  border-bottom: 1px solid var(--border-color) !important;
+}
+
+.leaflet-control-zoom a:hover {
+  background: var(--color-green-dark) !important;
+  color: #fff !important;
+}
+
+/* ================== ПАНЕЛЬ БЫСТРОГО ВЫБОРА СТАТУСА ================== */
+.status-bar {
+  position: absolute;
+  bottom: 15px;
+  left: 12px;
+  right: 12px;
+  z-index: 1000;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.status-btn {
+  flex: 1;
+  padding: 12px 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-glass);
+  backdrop-filter: blur(14px);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+  touch-action: manipulation;
+}
+
+.status-btn .status-icon {
+  font-size: 18px;
+}
+
+.status-btn:active {
+  transform: scale(0.93);
+}
+
+/* Активные состояния статусов */
+.status-btn.alive.active {
+  background: rgba(0, 255, 157, 0.25);
+  border-color: var(--color-green);
+  color: #fff;
+  box-shadow: 0 0 15px rgba(0, 255, 157, 0.4);
+}
+
+.status-btn.hit.active {
+  background: rgba(255, 51, 75, 0.3);
+  border-color: var(--color-red);
+  color: #fff;
+  box-shadow: 0 0 20px rgba(255, 51, 75, 0.6);
+  animation: pulse-red 1.5s infinite;
+}
+
+.status-btn.respawn.active {
+  background: rgba(0, 191, 255, 0.25);
+  border-color: var(--color-blue);
+  color: #fff;
+  box-shadow: 0 0 15px rgba(0, 191, 255, 0.4);
+}
+
+.status-btn.malfunction.active {
+  background: rgba(255, 183, 0, 0.25);
+  border-color: var(--color-yellow);
+  color: #fff;
+  box-shadow: 0 0 15px rgba(255, 183, 0, 0.4);
+}
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 15px rgba(255, 51, 75, 0.4); }
+  50% { box-shadow: 0 0 25px rgba(255, 51, 75, 0.8); }
+}
+
+/* ================== ПЛАВАЮЩИЕ КНОПКИ ТАКТИКИ (СПРАВА) ================== */
+.tactical-floating-actions {
+  position: absolute;
+  right: 12px;
+  bottom: 85px;
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.floating-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6);
+  transition: all 0.15s ease;
+}
+
+.floating-btn:active {
+  transform: scale(0.9);
+}
+
+.floating-btn.active {
+  border-color: var(--color-green);
+  color: var(--color-green);
+  box-shadow: 0 0 12px rgba(0, 255, 157, 0.5);
+}
+
+.floating-btn.alert {
+  border-color: var(--color-red);
+  color: var(--color-red);
+}
+
+/* ================== ИНФО-БАННЕР ВЕРТОЛЕТА И МЕРТВЯКА ================== */
+.respawn-banner {
+  position: absolute;
+  top: 56px;
+  left: 12px;
+  right: 12px;
+  z-index: 998;
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid var(--color-blue);
+  border-radius: 10px;
+  padding: 10px 14px;
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  backdrop-filter: blur(10px);
+  animation: slide-down 0.25s ease-out;
+}
+
+.respawn-banner.hidden {
+  display: none;
+}
+
+.respawn-info-title {
+  font-size: 11px;
+  color: var(--color-blue);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.respawn-timer-big {
+  font-size: 24px;
+  font-weight: 800;
+  font-family: monospace;
+  color: #fff;
+  text-shadow: 0 0 10px rgba(0, 191, 255, 0.6);
+}
+
+.btn-confirm-exit {
+  background: linear-gradient(135deg, var(--color-green-dark), var(--color-green));
+  color: #000;
+  font-weight: 800;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(0, 255, 157, 0.5);
+  transition: all 0.15s ease;
+}
+
+.btn-confirm-exit:active {
+  transform: scale(0.95);
+}
+
+@keyframes slide-down {
+  from { transform: translateY(-30px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* ================== МОДАЛЬНЫЕ ОКНА И ДИАЛОГИ ================== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: fade-in 0.2s ease-out;
+}
+
+.modal-overlay.hidden {
+  display: none;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 480px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.modal-title {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--color-green);
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 22px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.modal-body {
+  padding: 16px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modal-footer {
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-color);
+  background: rgba(0, 0, 0, 0.2);
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ================== ФОРМЫ И ИНПУТЫ ================== */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.form-input, .form-select, .form-textarea {
+  background: rgba(10, 14, 22, 0.9);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.form-input:focus, .form-select:focus, .form-textarea:focus {
+  border-color: var(--color-green);
+  box-shadow: 0 0 10px rgba(0, 255, 157, 0.2);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--color-green-dark), var(--color-green));
+  color: #000;
+  font-weight: 800;
+  border: none;
+  padding: 12px 18px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+  box-shadow: 0 0 15px rgba(0, 255, 157, 0.3);
+}
+
+.btn-primary:active {
+  transform: scale(0.97);
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-main);
+  font-weight: 700;
+  border: 1px solid var(--border-color);
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.btn-secondary:active {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* ================== ВЫБОР КОМАНДЫ (СЕТКА) ================== */
+.teams-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.team-card-option {
+  padding: 12px 10px;
+  border-radius: 8px;
+  border: 2px solid var(--border-color);
+  background: rgba(10, 14, 22, 0.8);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.team-card-option.selected {
+  border-color: var(--team-color);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 15px var(--team-color-glow);
+}
+
+.team-color-indicator {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--team-color);
+  box-shadow: 0 0 8px var(--team-color);
+}
+
+.team-card-title {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+/* ================== МАРКЕРЫ ИГРОКОВ НА КАРТЕ ================== */
+.player-map-icon {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.player-pin-circle {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: var(--team-color, #f59e0b);
+  box-shadow: 0 0 10px var(--team-color, #f59e0b);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: #000;
+  font-weight: 900;
+  transition: all 0.3s ease;
+}
+
+.player-pin-circle.hit {
+  background: var(--color-red) !important;
+  box-shadow: 0 0 14px var(--color-red) !important;
+  animation: pulse-hit 1s infinite;
+}
+
+.player-pin-circle.respawn {
+  background: var(--color-blue) !important;
+  box-shadow: 0 0 10px var(--color-blue) !important;
+}
+
+.player-pin-circle.malfunction {
+  background: var(--color-yellow) !important;
+  box-shadow: 0 0 10px var(--color-yellow) !important;
+}
+
+.player-callsign-label {
+  position: absolute;
+  top: -18px;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid var(--team-color, #fff);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+}
+
+.player-heading-pointer {
+  position: absolute;
+  top: -8px;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 9px solid #fff;
+  filter: drop-shadow(0 0 3px #000);
+}
+
+@keyframes pulse-hit {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.2); opacity: 0.7; }
+}
+
+/* ================== ТАКТИЧЕСКИЕ МАРКЕРЫ НА КАРТЕ ================== */
+.tactical-marker-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.tactical-marker-badge {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(10, 14, 22, 0.95);
+  border: 2px solid var(--marker-color, var(--color-red));
+  box-shadow: 0 0 12px var(--marker-color, var(--color-red));
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tactical-marker-title {
+  position: absolute;
+  bottom: -16px;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid var(--border-color);
+  padding: 1px 4px;
+  font-size: 9px;
+  border-radius: 3px;
+  color: var(--text-main);
+  pointer-events: none;
+}
+
+/* ================== ВСПЛЫВАЮЩИЕ УВЕДОМЛЕНИЯ ================== */
+#toast-container {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 90%;
+  max-width: 380px;
+  pointer-events: none;
+}
+
+.toast-msg {
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid var(--border-color);
+  border-left: 4px solid var(--toast-color, var(--color-green));
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(10px);
+  animation: toast-in 0.25s ease-out;
+}
+
+@keyframes toast-in {
+  from { transform: translateY(-20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
