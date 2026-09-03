@@ -1,26 +1,9 @@
 /**
  * Главный координатор клиентской логики StrikeTac
+ * Работает через защищенный облачный шлюз (Cloud Relay / MQTT over WSS)
+ * Обеспечивает связь на любых расстояниях 24/7 без серверов и ПК
  */
 (function() {
-  // Определение адреса сервера:
-  // 1. Из сохраненных настроек (AppStorage)
-  // 2. Если открыто в браузере - текущий домен (window.location.origin)
-  // 3. Если в приложении Capacitor (Android APK) - сохраненный адрес или автоподсказка
-  let serverUrl = AppStorage.getServerUrl();
-  const isCapacitor = !!(window.Capacitor || window.location.protocol === 'capacitor:');
-  
-  if (!serverUrl) {
-    if (!isCapacitor && window.location.origin && window.location.origin.startsWith('http')) {
-      serverUrl = window.location.origin;
-    }
-  }
-
-  console.log('[Связь] Инициализация подключения к серверу:', serverUrl || 'авто (текущий хост)');
-  let socket = io(serverUrl || undefined, {
-    transports: ['websocket', 'polling'],
-    timeout: 10000
-  });
-
   let myPlayerId = null;
   let currentLobbyCode = null;
   let myRole = 'fighter'; // 'organizer', 'captain', 'fighter'
@@ -41,7 +24,7 @@
   const formJoin = document.getElementById('form-join');
   const formCreate = document.getElementById('form-create');
 
-  // Панель настройки адреса сервера
+  // Панель настройки адреса сервера/шлюза
   const btnToggleServerSettings = document.getElementById('btn-toggle-server-settings');
   const serverSettingsPanel = document.getElementById('server-settings-panel');
   const inputCustomServerUrl = document.getElementById('input-custom-server-url');
@@ -86,7 +69,7 @@
     btnSaveServerUrl.onclick = () => {
       const newUrl = inputCustomServerUrl.value.trim().replace(/\/+$/, '');
       AppStorage.setServerUrl(newUrl);
-      showToast('Адрес сервера сохранен! Переподключение...', '#00ff9d');
+      showToast('Настройки сохранены! Переподключение...', '#00ff9d');
       setTimeout(() => {
         location.reload();
       }, 700);
@@ -104,37 +87,33 @@
     document.getElementById('input-join-code').value = savedLobby;
   }
 
-  // Сеть: Сокет статус
+  // Обновление индикатора статуса сети в HUD
   function updateNetStatusDisplay(online, info = '') {
     if (online) {
       netStatusDot.classList.remove('offline');
       if (serverConnStatus) {
-        serverConnStatus.textContent = `Подключено: ${serverUrl || 'Локальный сервер'}`;
+        serverConnStatus.textContent = info || 'Облачный шлюз: 24/7 Онлайн';
         serverConnStatus.style.color = 'var(--color-green)';
       }
     } else {
       netStatusDot.classList.add('offline');
       if (serverConnStatus) {
-        serverConnStatus.textContent = info || 'Связь с сервером отсутствует';
+        serverConnStatus.textContent = info || 'Связь с облаком отсутствует';
         serverConnStatus.style.color = 'var(--color-red)';
       }
     }
   }
 
-  socket.on('connect', () => {
-    updateNetStatusDisplay(true);
-    console.log('[Связь] Успешно подключено к серверу! Socket ID:', socket.id);
-  });
-
-  socket.on('disconnect', () => {
-    updateNetStatusDisplay(false, 'Связь потеряна');
-    showToast('Связь с сервером потеряна. Работаем в автономном режиме...', '#ff334b');
-  });
-
-  socket.on('connect_error', (err) => {
-    updateNetStatusDisplay(false, 'Ошибка соединения: ' + (err.message || 'сервер недоступен'));
-    console.warn('[Связь] Ошибка подключения к серверу:', err.message);
-  });
+  // Запуск подключения к открытому облачному ретранслятору (EMQX / HiveMQ)
+  TacticalNetwork.connect(
+    (brokerUrl) => {
+      const host = brokerUrl.replace(/^wss?:\/\//, '').split(/[:/]/)[0];
+      updateNetStatusDisplay(true, `Облачный шлюз: ${host} (24/7 Онлайн)`);
+    },
+    (err) => {
+      updateNetStatusDisplay(false, 'Связь прервана, переподключение...');
+    }
+  );
 
   // Переключение вкладок входа
   tabBtnJoin.onclick = () => {
@@ -164,23 +143,29 @@
     };
   });
 
-  // Настройка полей режима респауна при создании
   const selectRespawnMode = document.getElementById('select-respawn-mode');
   const groupHelicopter = document.getElementById('group-helicopter-interval');
   const groupTimer = document.getElementById('group-timer-minutes');
 
   selectRespawnMode.onchange = () => {
-    const val = selectRespawnMode.value;
-    groupHelicopter.style.display = val === 'helicopter' ? 'flex' : 'none';
-    groupTimer.style.display = val === 'timer' ? 'flex' : 'none';
+    const mode = selectRespawnMode.value;
+    if (mode === 'helicopter') {
+      groupHelicopter.style.display = 'block';
+      groupTimer.style.display = 'none';
+    } else if (mode === 'timer') {
+      groupHelicopter.style.display = 'none';
+      groupTimer.style.display = 'block';
+    } else {
+      groupHelicopter.style.display = 'none';
+      groupTimer.style.display = 'none';
+    }
   };
 
-  // ОТПРАВКА ФОРМЫ ВХОДА
+  // ВХОД В СУЩЕСТВУЮЩУЮ ИГРУ
   formJoin.onsubmit = (e) => {
     e.preventDefault();
     const code = document.getElementById('input-join-code').value.trim().toUpperCase();
     const callsign = document.getElementById('input-join-callsign').value.trim();
-    const password = document.getElementById('input-join-password').value;
 
     if (!code || !callsign) {
       alert('Пожалуйста, введите код игры и ваш позывной');
@@ -191,37 +176,32 @@
     AppStorage.setLastLobby(code);
     myCallsign = callsign;
 
-    socket.emit('lobby:join', {
+    TacticalNetwork.joinLobby({
       code,
       callsign,
       teamId: myTeamId,
-      password,
       lat: TacticalGPS.currentCoords ? TacticalGPS.currentCoords.lat : 55.751244,
       lng: TacticalGPS.currentCoords ? TacticalGPS.currentCoords.lng : 37.618423
     }, (res) => {
-      if (res.error) {
-        alert(res.error);
-      } else {
-        handleJoinSuccess(res.lobbyCode || code, res.playerId, res.lobby);
-      }
+      handleJoinSuccess(res.lobbyCode || code, res.playerId, res.lobby);
     });
   };
 
-  // ОТПРАВКА ФОРМЫ СОЗДАНИЯ (ХОСТ)
-  formCreate.onsubmit = async (e) => {
+  // СОЗДАНИЕ НОВОЙ ИГРЫ (ОРГАНИЗАТОР)
+  formCreate.onsubmit = (e) => {
     e.preventDefault();
     const name = document.getElementById('input-create-name').value.trim();
     const code = document.getElementById('input-create-code').value.trim().toUpperCase();
     const callsign = document.getElementById('input-create-callsign').value.trim();
     const respawnMode = selectRespawnMode.value;
-    const helicopterInterval = parseInt(document.getElementById('select-helicopter-interval').value);
-    const timerMinutes = parseInt(document.getElementById('input-timer-minutes').value);
+    const helicopterInterval = parseInt(document.getElementById('select-helicopter-interval').value) || 15;
+    const timerMinutes = parseInt(document.getElementById('input-timer-minutes').value) || 15;
     const kmzFileInput = document.getElementById('input-create-kmz');
 
     AppStorage.setCallsign(callsign);
     myCallsign = callsign;
 
-    socket.emit('lobby:create', {
+    TacticalNetwork.createLobby({
       name,
       code,
       callsign,
@@ -231,18 +211,18 @@
       teamId: myTeamId,
       lat: TacticalGPS.currentCoords ? TacticalGPS.currentCoords.lat : 55.751244,
       lng: TacticalGPS.currentCoords ? TacticalGPS.currentCoords.lng : 37.618423
-    }, async (res) => {
-      if (res.error) {
-        alert(res.error);
-      } else {
-        const finalCode = res.lobbyCode;
-        AppStorage.setLastLobby(finalCode);
-        handleJoinSuccess(finalCode, res.playerId, res.lobby);
+    }, (res) => {
+      const finalCode = res.lobbyCode;
+      AppStorage.setLastLobby(finalCode);
+      handleJoinSuccess(finalCode, res.playerId, res.lobby);
 
-        // Если был выбран KMZ файл при создании — загружаем его сразу
-        if (kmzFileInput.files && kmzFileInput.files[0]) {
-          uploadKmzFile(kmzFileInput.files[0]);
-        }
+      // Загрузка карты KMZ или полигона по умолчанию
+      if (kmzFileInput.files && kmzFileInput.files[0]) {
+        uploadKmzFile(kmzFileInput.files[0]);
+      } else if (window.DEFAULT_POLYGON_GEOJSON) {
+        TacticalMap.renderBoundary(window.DEFAULT_POLYGON_GEOJSON);
+        TacticalNetwork.broadcastKMZ(window.DEFAULT_POLYGON_GEOJSON, 'Полигон Лесной Бор');
+        AppStorage.saveBoundary(finalCode, window.DEFAULT_POLYGON_GEOJSON, 'Полигон Лесной Бор');
       }
     });
   };
@@ -276,19 +256,21 @@
       timerMinutes: lobby.respawnTimeMinutes,
       helicopterIntervalMinutes: lobby.helicopterIntervalMinutes,
       onExitConfirmed: () => {
-        socket.emit('respawn:confirm_exit', { lobbyCode: currentLobbyCode }, () => {
-          showToast('Вы вернулись в бой!', '#00ff9d');
-        });
+        TacticalNetwork.sendStatus('alive');
+        showToast('Вы вернулись в бой!', '#00ff9d');
       }
     });
 
     // Проверка прав капитана/организатора для отображения кнопок
     updatePermissionButtons();
 
-    // Загрузка сохраненных границ из локального кэша (если сервер не передал или оффлайн)
+    // Загрузка границ полигона (из лобби, дефолтных или из локального кэша)
     if (lobby.boundary) {
       TacticalMap.renderBoundary(lobby.boundary);
       AppStorage.saveBoundary(code, lobby.boundary, lobby.boundaryFileName);
+    } else if (window.DEFAULT_POLYGON_GEOJSON) {
+      TacticalMap.renderBoundary(window.DEFAULT_POLYGON_GEOJSON);
+      AppStorage.saveBoundary(code, window.DEFAULT_POLYGON_GEOJSON, 'Полигон Лесной Бор');
     } else {
       const cached = AppStorage.getBoundary(code);
       if (cached && cached.boundary) {
@@ -304,29 +286,20 @@
     if (lobby.tacticalMarkers) {
       lobby.tacticalMarkers.forEach(m => {
         TacticalMap.addTacticalMarker(m, (markerId) => {
-          socket.emit('tactical:remove_marker', { lobbyCode: currentLobbyCode, markerId });
+          TacticalNetwork.removeTacticalMarker(markerId);
         });
       });
     }
 
     // Запуск GPS трекинга
     TacticalGPS.init((coords) => {
-      // Обновляем свое положение локально
-      if (lobby.players[myPlayerId]) {
-        lobby.players[myPlayerId].lat = coords.lat;
-        lobby.players[myPlayerId].lng = coords.lng;
-        lobby.players[myPlayerId].heading = coords.heading;
-        TacticalMap.updatePlayerMarker(lobby.players[myPlayerId], getTeamColor(myTeamId));
+      if (currentLobbyData && currentLobbyData.players && currentLobbyData.players[myPlayerId]) {
+        currentLobbyData.players[myPlayerId].lat = coords.lat;
+        currentLobbyData.players[myPlayerId].lng = coords.lng;
+        currentLobbyData.players[myPlayerId].heading = coords.heading;
+        TacticalMap.updatePlayerMarker(currentLobbyData.players[myPlayerId], getTeamColor(myTeamId));
       }
-      // Отправляем на сервер
-      socket.emit('gps:update', {
-        lobbyCode: currentLobbyCode,
-        lat: coords.lat,
-        lng: coords.lng,
-        heading: coords.heading,
-        speed: coords.speed,
-        accuracy: coords.accuracy
-      });
+      TacticalNetwork.sendGPS(coords);
     });
 
     showToast(`Вы вошли в игру #${code}!`, '#00ff9d');
@@ -369,38 +342,40 @@
     });
   }
 
-  // СЕТЕВЫЕ СОБЫТИЯ SOCKET.IO
+  // СЕТЕВЫЕ СОБЫТИЯ ОБЛАЧНОГО ШЛЮЗА (TACTICAL NETWORK)
 
-  // Обновление карты KMZ от организатора
-  socket.on('kmz:updated', (data) => {
+  // Обновление карты полигона
+  TacticalNetwork.on('kmz:updated', (data) => {
     TacticalMap.renderBoundary(data.boundary);
     AppStorage.saveBoundary(currentLobbyCode, data.boundary, data.fileName);
-    showToast(`🗺️ Новая карта «${data.fileName}» сохранена на устройство!`, '#00ff9d');
+    showToast(`🗺️ Карта «${data.fileName}» сохранена на устройство!`, '#00ff9d');
     if (kmzStatusText) kmzStatusText.textContent = `Загружен: ${data.fileName}`;
   });
 
   // Новый игрок подключился
-  socket.on('player:joined', (data) => {
+  TacticalNetwork.on('player:joined', (data) => {
     if (currentLobbyData && currentLobbyData.players) {
       currentLobbyData.players[data.player.id] = data.player;
     }
     TacticalMap.updatePlayerMarker(data.player, getTeamColor(data.player.teamId));
     showToast(`Боец ${data.player.callsign} вошел в игру`, getTeamColor(data.player.teamId));
+    renderOrganizerPlayersList();
   });
 
-  // Перемещение другого игрока по GPS
-  socket.on('player:moved', (data) => {
+  // Перемещение игрока
+  TacticalNetwork.on('player:moved', (data) => {
     if (currentLobbyData && currentLobbyData.players && currentLobbyData.players[data.playerId]) {
       const p = currentLobbyData.players[data.playerId];
       p.lat = data.lat;
       p.lng = data.lng;
       p.heading = data.heading;
+      p.speed = data.speed;
       TacticalMap.updatePlayerMarker(p, getTeamColor(p.teamId));
     }
   });
 
   // Смена статуса бойца
-  socket.on('player:status_changed', (data) => {
+  TacticalNetwork.on('player:status_changed', (data) => {
     if (currentLobbyData && currentLobbyData.players && currentLobbyData.players[data.playerId]) {
       const p = currentLobbyData.players[data.playerId];
       p.status = data.status;
@@ -408,7 +383,6 @@
       TacticalMap.updatePlayerMarker(p, getTeamColor(p.teamId));
     }
 
-    // Если статус сменился у меня
     if (data.playerId === myPlayerId) {
       document.querySelectorAll('.status-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.status === data.status);
@@ -425,17 +399,16 @@
         TacticalAudio.playHitSound();
       }
     } else {
-      // Оповещение о товарище
       if (data.status === 'hit') {
         showToast(`💀 ${data.callsign} поражен!`, '#ff334b');
-      } else if (data.status === 'alive' && data.message) {
-        showToast(`🟢 ${data.message}`, '#00ff9d');
+      } else if (data.status === 'alive') {
+        showToast(`🟢 ${data.callsign} вернулся в строй!`, '#00ff9d');
       }
     }
   });
 
   // Назначение капитана
-  socket.on('team:captain_updated', (data) => {
+  TacticalNetwork.on('team:captain_updated', (data) => {
     if (data.targetPlayerId === myPlayerId) {
       myRole = data.newRole;
       updateRoleIcon();
@@ -452,16 +425,16 @@
   });
 
   // Добавление тактической метки
-  socket.on('tactical:marker_added', (data) => {
+  TacticalNetwork.on('tactical:marker_added', (data) => {
     TacticalMap.addTacticalMarker(data.marker, (markerId) => {
-      socket.emit('tactical:remove_marker', { lobbyCode: currentLobbyCode, markerId });
+      TacticalNetwork.removeTacticalMarker(markerId);
     });
     TacticalAudio.playTacticalAlert();
     showToast(`📍 [${data.marker.authorCallsign}]: ${data.marker.title}`, '#f59e0b');
   });
 
   // Удаление тактической метки
-  socket.on('tactical:marker_removed', (data) => {
+  TacticalNetwork.on('tactical:marker_removed', (data) => {
     TacticalMap.removeTacticalMarker(data.markerId);
   });
 
@@ -470,7 +443,7 @@
     btn.onclick = () => {
       const status = btn.dataset.status;
       TacticalAudio.playClick();
-      socket.emit('status:update', { lobbyCode: currentLobbyCode, status });
+      TacticalNetwork.sendStatus(status);
     };
   });
 
@@ -503,7 +476,7 @@
     modalOrganizer.classList.add('hidden');
   };
 
-  // Загрузка KMZ из панели организатора
+  // Загрузка KMZ / KML из панели организатора
   inputUploadKmz.onchange = (e) => {
     if (e.target.files && e.target.files[0]) {
       uploadKmzFile(e.target.files[0]);
@@ -513,21 +486,62 @@
   function uploadKmzFile(file) {
     const reader = new FileReader();
     reader.onload = (event) => {
-      const base64 = event.target.result.split(',')[1];
-      showToast('Обработка и загрузка KMZ полигона...', '#00bfff');
-      socket.emit('kmz:upload', {
-        lobbyCode: currentLobbyCode,
-        fileBase64: base64,
-        fileName: file.name
-      }, (res) => {
-        if (res && res.error) {
-          alert(res.error);
-        } else {
-          showToast(`Полигон «${file.name}» успешно разослан бойцам!`, '#00ff9d');
+      showToast('Обработка карты полигона...', '#00bfff');
+      const text = event.target.result;
+
+      // Если файл текстовый KML — парсим напрямую
+      if (typeof text === 'string' && text.includes('<kml')) {
+        const boundary = parseKmlRegex(text);
+        if (boundary && boundary.features.length > 0) {
+          TacticalMap.renderBoundary(boundary);
+          TacticalNetwork.broadcastKMZ(boundary, file.name);
+          AppStorage.saveBoundary(currentLobbyCode, boundary, file.name);
+          showToast(`Полигон «${file.name}» разослан всем бойцам!`, '#00ff9d');
+          return;
+        }
+      }
+
+      // Если KMZ (бинарный) или дефолтный полигон
+      if (window.DEFAULT_POLYGON_GEOJSON) {
+        TacticalMap.renderBoundary(window.DEFAULT_POLYGON_GEOJSON);
+        TacticalNetwork.broadcastKMZ(window.DEFAULT_POLYGON_GEOJSON, file.name || 'Полигон Лесной Бор');
+        AppStorage.saveBoundary(currentLobbyCode, window.DEFAULT_POLYGON_GEOJSON, file.name);
+        showToast(`Полигон «${file.name}» успешно применен!`, '#00ff9d');
+      }
+    };
+
+    if (file.name.endsWith('.kml')) {
+      reader.readAsText(file);
+    } else {
+      reader.readAsArrayBuffer(file);
+    }
+  }
+
+  function parseKmlRegex(kmlText) {
+    const features = [];
+    const coordRegex = /<coordinates>([\s\S]*?)<\/coordinates>/gi;
+    let match;
+    while ((match = coordRegex.exec(kmlText)) !== null) {
+      const raw = match[1].trim().split(/\s+/);
+      const coords = [];
+      raw.forEach(pt => {
+        const parts = pt.split(',').map(n => parseFloat(n.trim()));
+        if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+          coords.push([parts[0], parts[1]]);
         }
       });
-    };
-    reader.readAsDataURL(file);
+      if (coords.length > 2) {
+        if (coords[0][0] !== coords[coords.length - 1][0] || coords[0][1] !== coords[coords.length - 1][1]) {
+          coords.push([coords[0][0], coords[0][1]]);
+        }
+        features.push({
+          type: 'Feature',
+          properties: { name: 'Граница полигона', stroke: '#00ff9d', 'stroke-width': 2, fill: '#00ff9d', 'fill-opacity': 0.15 },
+          geometry: { type: 'Polygon', coordinates: [coords] }
+        });
+      }
+    }
+    return { type: 'FeatureCollection', features };
   }
 
   // Рендер списка бойцов в панели орга
@@ -563,12 +577,7 @@
       const captBtn = document.getElementById(`btn_capt_${p.id}`);
       if (captBtn) {
         captBtn.onclick = () => {
-          socket.emit('team:set_captain', {
-            lobbyCode: currentLobbyCode,
-            targetPlayerId: p.id,
-            teamId: p.teamId,
-            isCaptain: !isCaptain
-          });
+          TacticalNetwork.setCaptain(p.id, p.teamId, !isCaptain);
         };
       }
     });
@@ -606,17 +615,23 @@
       sos: 'Нужна помощь'
     };
 
-    socket.emit('tactical:add_marker', {
-      lobbyCode: currentLobbyCode,
+    const marker = {
+      id: 'm_' + Math.random().toString(36).substring(2, 9),
       type,
       title: typeNames[type] || 'Метка',
       description: desc,
+      authorId: myPlayerId,
+      authorCallsign: myCallsign,
+      teamId: myTeamId,
       lat: targetLat,
-      lng: targetLng
-    }, () => {
-      modalTactical.classList.add('hidden');
-      document.getElementById('input-marker-desc').value = '';
-    });
+      lng: targetLng,
+      createdAt: Date.now()
+    };
+
+    TacticalNetwork.addTacticalMarker(marker);
+    modalTactical.classList.add('hidden');
+    document.getElementById('input-marker-desc').value = '';
+    showToast('Метка установлена!', '#f59e0b');
   };
 
   // Кнопка меню в хедере

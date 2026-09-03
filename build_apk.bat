@@ -1,36 +1,27 @@
-﻿@echo off
-chcp 65001 > nul
-echo ===================================================
-echo     STRIKETAC - Сборка Android APK
-echo ===================================================
-echo.
-echo 1. Синхронизация веб-ресурсов...
+@echo off
+set "JAVA_HOME=C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot"
+set "ANDROID_HOME=C:\Android\sdk"
+set "PATH=%JAVA_HOME%\bin;%ANDROID_HOME%\platform-tools;%PATH%"
+
+echo [1/3] Syncing Capacitor Android assets...
 call npx cap sync android
 if %ERRORLEVEL% NEQ 0 (
-    echo [ОШИБКА] Не удалось синхронизировать веб-ресурсы
-    pause
+    echo Error during cap sync!
     exit /b %ERRORLEVEL%
 )
 
-echo.
-echo 2. Компиляция APK через Gradle...
+echo [2/3] Compiling Android APK...
 cd android
 call gradlew.bat assembleDebug
 if %ERRORLEVEL% NEQ 0 (
-    echo [ОШИБКА] Сборка APK завершилась с ошибкой
+    echo Error during Gradle build!
     cd ..
-    pause
     exit /b %ERRORLEVEL%
 )
 cd ..
 
-echo.
-echo 3. Копирование APK в корень проекта...
-copy /Y android\app\build\outputs\apk\debug\app-debug.apk StrikeTac.apk > nul
-
-echo.
+echo [3/3] Copying APK to root directory...
+copy /Y android\app\build\outputs\apk\debug\app-debug.apk StrikeTac.apk
 echo ===================================================
-echo ✔ Сборка успешно завершена!
-echo Файл: StrikeTac.apk
+echo BUILD SUCCESS: StrikeTac.apk updated!
 echo ===================================================
-pause
