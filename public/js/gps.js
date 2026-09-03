@@ -1,35 +1,45 @@
 /**
  * Модуль высокоточной геолокации (GPS) и компаса для страйкбола
- * Включает защиту от засыпания экрана (Wake Lock API)
+ * Включает подавление шума/джиттера, фильтрацию погрешностей и WakeLock
  */
 const TacticalGPS = {
   watchId: null,
   currentCoords: null,
+  rawCoords: null,
   wakeLock: null,
   onLocationUpdate: null,
-  simulationMode: false,
-  simInterval: null,
+  isTracking: false,
+
+  // Расчет дистанции между двумя координатами в метрах (формула гаверсинусов)
+  getDistanceMeters(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  },
 
   init(callback) {
     this.onLocationUpdate = callback;
     this.requestWakeLock();
     this.startTracking();
 
-    // Слушаем изменение ориентации устройства для компаса
+    // Слушаем компас устройства
     if (window.DeviceOrientationEvent) {
       window.addEventListener('deviceorientation', (event) => {
-        if (event.webkitCompassHeading) {
-          // iOS compass
+        if (event.webkitCompassHeading !== undefined && event.webkitCompassHeading !== null) {
           this.updateHeading(event.webkitCompassHeading);
-        } else if (event.alpha !== null) {
-          // Android compass
+        } else if (event.alpha !== null && event.alpha !== undefined) {
           this.updateHeading(360 - event.alpha);
         }
       }, true);
     }
   },
 
-  // Защита экрана от отключения во время игры
+  // Защита экрана от отключения во время боя
   async requestWakeLock() {
     try {
       if ('wakeLock' in navigator) {
@@ -43,46 +53,76 @@ const TacticalGPS = {
         });
       }
     } catch (err) {
-      console.warn('[GPS] WakeLock не поддерживается браузером:', err);
+      console.warn('[GPS] WakeLock не поддерживается:', err);
     }
   },
 
-  // Запуск GPS слежения высокой точности
+  // Запуск аппаратного GPS слежения
   startTracking() {
     if (!navigator.geolocation) {
-      console.warn('[GPS] Геолокация не поддерживается, включен режим симуляции.');
-      this.startSimulation();
+      console.warn('[GPS] Геолокация не поддерживается устройством.');
       return;
     }
 
     const options = {
       enableHighAccuracy: true,
-      timeout: 10000,
+      timeout: 15000,
       maximumAge: 1000
     };
 
+    this.isTracking = true;
+
     this.watchId = navigator.geolocation.watchPosition(
       (pos) => {
+        const rawLat = pos.coords.latitude;
+        const rawLng = pos.coords.longitude;
+        const rawAccuracy = Math.round(pos.coords.accuracy) || 10;
+        const rawSpeed = pos.coords.speed || 0;
+        const rawHeading = pos.coords.heading || (this.currentCoords ? this.currentCoords.heading : 0);
+
+        // Игнорируем выбросы с катастрофически низкой точностью (> 40 метров)
+        if (rawAccuracy > 40 && this.currentCoords) {
+          console.warn('[GPS] Пропущен спутниковый выброс с точностью ±' + rawAccuracy + 'м');
+          return;
+        }
+
+        let filteredLat = rawLat;
+        let filteredLng = rawLng;
+
+        // Подавление джиттера: если боец стоит на месте
+        if (this.currentCoords) {
+          const dist = this.getDistanceMeters(this.currentCoords.lat, this.currentCoords.lng, rawLat, rawLng);
+
+          // Если смещение меньше 2.5 метров и скорость минимальна — игнорируем дрожание спутников!
+          if (dist < 2.5 && rawSpeed < 0.7) {
+            filteredLat = this.currentCoords.lat;
+            filteredLng = this.currentCoords.lng;
+          } else {
+            // Экспоненциальное сглаживание для плавности перемещения
+            filteredLat = this.currentCoords.lat * 0.25 + rawLat * 0.75;
+            filteredLng = this.currentCoords.lng * 0.25 + rawLng * 0.75;
+          }
+        }
+
         const coords = {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          heading: pos.coords.heading || (this.currentCoords ? this.currentCoords.heading : 0),
-          speed: pos.coords.speed || 0,
-          altitude: pos.coords.altitude || 0,
-          accuracy: Math.round(pos.coords.accuracy) || 5,
+          lat: filteredLat,
+          lng: filteredLng,
+          rawLat: rawLat,
+          rawLng: rawLng,
+          heading: Math.round(rawHeading),
+          speed: Math.round(rawSpeed * 3.6), // в км/ч
+          altitude: Math.round(pos.coords.altitude || 0),
+          accuracy: rawAccuracy,
           timestamp: pos.timestamp
         };
+
         this.currentCoords = coords;
         if (this.onLocationUpdate) {
           this.onLocationUpdate(coords);
         }
       },
       (err) => {
-        console.warn('[GPS] Ошибка спутников:', err.message, 'Переключаем на базовые координаты.');
-        // Если пользователь не дал доступ к GPS на ПК, переходим в мягкую симуляцию
-        if (!this.currentCoords) {
-          this.startSimulation();
-        }
+        console.warn('[GPS] Ошибка спутников:', err.message);
       },
       options
     );
@@ -97,70 +137,14 @@ const TacticalGPS = {
     }
   },
 
-  // Режим симуляции для тестирования на компьютере / в помещении
-  startSimulation(baseLat = 55.751244, baseLng = 37.618423) {
-    if (this.simulationMode) return;
-    this.simulationMode = true;
-    console.log('[GPS] Активирован режим полигонной симуляции');
-
-    let simLat = baseLat;
-    let simLng = baseLng;
-    let heading = 0;
-
-    this.currentCoords = {
-      lat: simLat,
-      lng: simLng,
-      heading: 0,
-      speed: 1.2,
-      accuracy: 3,
-      timestamp: Date.now()
-    };
-
-    if (this.onLocationUpdate) {
-      this.onLocationUpdate(this.currentCoords);
-    }
-
-    this.simInterval = setInterval(() => {
-      // Имитируем небольшое тактическое перемещение бойца
-      simLat += (Math.random() - 0.5) * 0.00015;
-      simLng += (Math.random() - 0.5) * 0.00015;
-      heading = (heading + (Math.random() - 0.5) * 30 + 360) % 360;
-
-      this.currentCoords = {
-        lat: simLat,
-        lng: simLng,
-        heading: Math.round(heading),
-        speed: +(Math.random() * 2 + 0.5).toFixed(1),
-        accuracy: 3,
-        timestamp: Date.now()
-      };
-
-      if (this.onLocationUpdate) {
-        this.onLocationUpdate(this.currentCoords);
-      }
-    }, 2500);
-  },
-
-  setSimulationPosition(lat, lng) {
-    if (this.currentCoords) {
-      this.currentCoords.lat = lat;
-      this.currentCoords.lng = lng;
-      if (this.onLocationUpdate) {
-        this.onLocationUpdate(this.currentCoords);
-      }
-    }
-  },
-
   stop() {
     if (this.watchId) {
       navigator.geolocation.clearWatch(this.watchId);
       this.watchId = null;
     }
-    if (this.simInterval) {
-      clearInterval(this.simInterval);
-      this.simInterval = null;
-    }
+    this.isTracking = false;
   }
 };
 
 window.TacticalGPS = TacticalGPS;
+

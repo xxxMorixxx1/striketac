@@ -166,6 +166,23 @@ const TacticalMap = {
       this.playersMarkers[playerId] = marker;
     }
 
+    // Отрисовка круга реальной погрешности спутников вокруг своего бойца
+    if (isMe && player.accuracy) {
+      if (!this.accuracyCircle) {
+        this.accuracyCircle = L.circle([lat, lng], {
+          radius: player.accuracy,
+          color: '#00bfff',
+          weight: 1,
+          dashArray: '3, 4',
+          fillColor: '#00bfff',
+          fillOpacity: 0.1
+        }).addTo(this.map);
+      } else {
+        this.accuracyCircle.setLatLng([lat, lng]);
+        this.accuracyCircle.setRadius(player.accuracy);
+      }
+    }
+
     // Автоматическое следование за своим положением
     if (isMe && this.isFollowingGPS) {
       this.map.panTo([lat, lng], { animate: true, duration: 0.5 });

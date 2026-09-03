@@ -1,7 +1,6 @@
 /**
- * Главный координатор клиентской логики StrikeTac
- * Работает через защищенный облачный шлюз (Cloud Relay / MQTT over WSS)
- * Обеспечивает связь на любых расстояниях 24/7 без серверов и ПК
+ * Главный координатор клиентской логики StrikeTac (v1.2)
+ * Полная поддержка Cloud Relay, фильтрация GPS, пароли лобби и Safe Area
  */
 (function() {
   let myPlayerId = null;
@@ -17,7 +16,9 @@
   const hudPlayerBadge = document.getElementById('hud-player-badge');
   const hudCallsignDisplay = document.getElementById('hud-callsign-display');
   const hudRoleIcon = document.getElementById('hud-role-icon');
-  
+  const hudGpsAccuracy = document.getElementById('hud-gps-accuracy');
+  const hudPlayersCount = document.getElementById('hud-players-count');
+
   const modalAuth = document.getElementById('modal-auth');
   const tabBtnJoin = document.getElementById('tab-btn-join');
   const tabBtnCreate = document.getElementById('tab-btn-create');
@@ -43,8 +44,11 @@
   const modalOrganizer = document.getElementById('modal-organizer');
   const btnCloseOrganizer = document.getElementById('btn-close-organizer');
   const inputUploadKmz = document.getElementById('input-upload-kmz-field');
+  const uploadKmzLabel = document.getElementById('upload-kmz-label');
   const kmzStatusText = document.getElementById('kmz-status-text');
   const organizerPlayersList = document.getElementById('organizer-players-list');
+  const inputCreateKmz = document.getElementById('input-create-kmz');
+  const createKmzLabel = document.getElementById('create-kmz-label');
 
   const modalTactical = document.getElementById('modal-tactical-marker');
   const btnCloseTactical = document.getElementById('btn-close-tactical');
@@ -87,6 +91,25 @@
     document.getElementById('input-join-code').value = savedLobby;
   }
 
+  // Индикация выбранных файлов в UI
+  if (inputCreateKmz && createKmzLabel) {
+    inputCreateKmz.onchange = (e) => {
+      if (e.target.files && e.target.files[0]) {
+        createKmzLabel.textContent = `Выбран: ${e.target.files[0].name}`;
+        createKmzLabel.style.color = 'var(--color-green)';
+      }
+    };
+  }
+
+  if (inputUploadKmz && uploadKmzLabel) {
+    inputUploadKmz.onchange = (e) => {
+      if (e.target.files && e.target.files[0]) {
+        uploadKmzLabel.textContent = `Выбран: ${e.target.files[0].name}`;
+        uploadKmzFile(e.target.files[0]);
+      }
+    };
+  }
+
   // Обновление индикатора статуса сети в HUD
   function updateNetStatusDisplay(online, info = '') {
     if (online) {
@@ -104,7 +127,7 @@
     }
   }
 
-  // Запуск подключения к открытому облачному ретранслятору (EMQX / HiveMQ)
+  // Запуск подключения к открытому облачному ретранслятору (EMQX WSS)
   TacticalNetwork.connect(
     (brokerUrl) => {
       const host = brokerUrl.replace(/^wss?:\/\//, '').split(/[:/]/)[0];
@@ -161,14 +184,19 @@
     }
   };
 
-  // ВХОД В СУЩЕСТВУЮЩУЮ ИГРУ
+  // ВХОД В СУЩЕСТВУЮЩУЮ ИГРУ (ТРЕБУЕТСЯ ПАРОЛЬ)
   formJoin.onsubmit = (e) => {
     e.preventDefault();
     const code = document.getElementById('input-join-code').value.trim().toUpperCase();
     const callsign = document.getElementById('input-join-callsign').value.trim();
+    const password = document.getElementById('input-join-password').value.trim();
 
     if (!code || !callsign) {
       alert('Пожалуйста, введите код игры и ваш позывной');
+      return;
+    }
+    if (!password) {
+      alert('Пожалуйста, введите пароль лобби игры!');
       return;
     }
 
@@ -180,6 +208,7 @@
       code,
       callsign,
       teamId: myTeamId,
+      password,
       lat: TacticalGPS.currentCoords ? TacticalGPS.currentCoords.lat : 55.751244,
       lng: TacticalGPS.currentCoords ? TacticalGPS.currentCoords.lng : 37.618423
     }, (res) => {
@@ -187,16 +216,22 @@
     });
   };
 
-  // СОЗДАНИЕ НОВОЙ ИГРЫ (ОРГАНИЗАТОР)
+  // СОЗДАНИЕ НОВОЙ ИГРЫ (ОРГАНИЗАТОР, ОБЯЗАТЕЛЬНЫЙ ПАРОЛЬ)
   formCreate.onsubmit = (e) => {
     e.preventDefault();
     const name = document.getElementById('input-create-name').value.trim();
     const code = document.getElementById('input-create-code').value.trim().toUpperCase();
+    const password = document.getElementById('input-create-password').value.trim();
     const callsign = document.getElementById('input-create-callsign').value.trim();
     const respawnMode = selectRespawnMode.value;
     const helicopterInterval = parseInt(document.getElementById('select-helicopter-interval').value) || 15;
     const timerMinutes = parseInt(document.getElementById('input-timer-minutes').value) || 15;
     const kmzFileInput = document.getElementById('input-create-kmz');
+
+    if (!password) {
+      alert('Пожалуйста, задайте пароль игры для бойцов!');
+      return;
+    }
 
     AppStorage.setCallsign(callsign);
     myCallsign = callsign;
@@ -204,6 +239,7 @@
     TacticalNetwork.createLobby({
       name,
       code,
+      password,
       callsign,
       respawnMode,
       respawnTimeMinutes: timerMinutes,
@@ -217,7 +253,7 @@
       handleJoinSuccess(finalCode, res.playerId, res.lobby);
 
       // Загрузка карты KMZ или полигона по умолчанию
-      if (kmzFileInput.files && kmzFileInput.files[0]) {
+      if (kmzFileInput && kmzFileInput.files && kmzFileInput.files[0]) {
         uploadKmzFile(kmzFileInput.files[0]);
       } else if (window.DEFAULT_POLYGON_GEOJSON) {
         TacticalMap.renderBoundary(window.DEFAULT_POLYGON_GEOJSON);
@@ -245,6 +281,7 @@
     hudPlayerBadge.style.display = 'flex';
     hudCallsignDisplay.textContent = myCallsign;
     updateRoleIcon();
+    updateOnlinePlayersCount();
 
     // Скрываем окно авторизации и показываем панель статуса
     modalAuth.classList.add('hidden');
@@ -256,7 +293,7 @@
       timerMinutes: lobby.respawnTimeMinutes,
       helicopterIntervalMinutes: lobby.helicopterIntervalMinutes,
       onExitConfirmed: () => {
-        TacticalNetwork.sendStatus('alive');
+        setLocalStatus('alive');
         showToast('Вы вернулись в бой!', '#00ff9d');
       }
     });
@@ -264,19 +301,13 @@
     // Проверка прав капитана/организатора для отображения кнопок
     updatePermissionButtons();
 
-    // Загрузка границ полигона (из лобби, дефолтных или из локального кэша)
+    // Загрузка границ полигона
     if (lobby.boundary) {
       TacticalMap.renderBoundary(lobby.boundary);
       AppStorage.saveBoundary(code, lobby.boundary, lobby.boundaryFileName);
     } else if (window.DEFAULT_POLYGON_GEOJSON) {
       TacticalMap.renderBoundary(window.DEFAULT_POLYGON_GEOJSON);
       AppStorage.saveBoundary(code, window.DEFAULT_POLYGON_GEOJSON, 'Полигон Лесной Бор');
-    } else {
-      const cached = AppStorage.getBoundary(code);
-      if (cached && cached.boundary) {
-        TacticalMap.renderBoundary(cached.boundary);
-        showToast('Загружены локальные границы полигона из памяти', '#00bfff');
-      }
     }
 
     // Отрисовка всех текущих игроков на карте
@@ -291,18 +322,42 @@
       });
     }
 
-    // Запуск GPS трекинга
+    // Запуск высокоточного GPS трекинга
     TacticalGPS.init((coords) => {
       if (currentLobbyData && currentLobbyData.players && currentLobbyData.players[myPlayerId]) {
         currentLobbyData.players[myPlayerId].lat = coords.lat;
         currentLobbyData.players[myPlayerId].lng = coords.lng;
         currentLobbyData.players[myPlayerId].heading = coords.heading;
+        currentLobbyData.players[myPlayerId].accuracy = coords.accuracy;
         TacticalMap.updatePlayerMarker(currentLobbyData.players[myPlayerId], getTeamColor(myTeamId));
       }
+
+      // Индикация точности GPS в HUD
+      if (hudGpsAccuracy && coords.accuracy) {
+        hudGpsAccuracy.style.display = 'block';
+        hudGpsAccuracy.textContent = `🛰️ GPS: ±${coords.accuracy}м`;
+        if (coords.accuracy <= 6) {
+          hudGpsAccuracy.style.color = 'var(--color-green)';
+        } else if (coords.accuracy <= 15) {
+          hudGpsAccuracy.style.color = 'var(--color-blue)';
+        } else {
+          hudGpsAccuracy.style.color = 'var(--color-yellow)';
+        }
+      }
+
       TacticalNetwork.sendGPS(coords);
     });
 
     showToast(`Вы вошли в игру #${code}!`, '#00ff9d');
+  }
+
+  // Счетчик бойцов в HUD
+  function updateOnlinePlayersCount() {
+    if (currentLobbyData && currentLobbyData.players && hudPlayersCount) {
+      const count = Object.keys(currentLobbyData.players).length;
+      hudPlayersCount.style.display = 'block';
+      hudPlayersCount.textContent = `👥 ${count}`;
+    }
   }
 
   // Обновление иконки роли бойца в HUD
@@ -340,7 +395,52 @@
     Object.values(lobby.players).forEach(player => {
       TacticalMap.updatePlayerMarker(player, getTeamColor(player.teamId));
     });
+    updateOnlinePlayersCount();
   }
+
+  // МГНОВЕННОЕ ЛОКАЛЬНОЕ ПЕРЕКЛЮЧЕНИЕ СТАТУСА БОЙЦА (Один клик под перчатки)
+  function setLocalStatus(status) {
+    // 1. Мгновенно подсвечиваем нужную кнопку
+    document.querySelectorAll('.status-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.status === status);
+    });
+
+    // 2. Управляем баннером респауна и звуками
+    if (status === 'respawn') {
+      respawnBanner.classList.remove('hidden');
+      if (RespawnManager.mode === 'timer') {
+        RespawnManager.startIndividualTimer();
+      }
+    } else if (status === 'alive') {
+      respawnBanner.classList.add('hidden');
+    } else if (status === 'hit') {
+      TacticalAudio.playHitSound();
+    }
+
+    // 3. Мгновенно обновляем свою метку на карте
+    if (currentLobbyData && currentLobbyData.players && currentLobbyData.players[myPlayerId]) {
+      currentLobbyData.players[myPlayerId].status = status;
+      TacticalMap.updatePlayerMarker(currentLobbyData.players[myPlayerId], getTeamColor(myTeamId));
+    }
+
+    // 4. Отправляем в облачный шлюз
+    TacticalNetwork.sendStatus(status);
+  }
+
+  document.querySelectorAll('.status-btn').forEach(btn => {
+    btn.onclick = () => {
+      const status = btn.dataset.status;
+      TacticalAudio.playClick();
+      setLocalStatus(status);
+    };
+  });
+
+  // Отклонение авторизации по паролю
+  TacticalNetwork.on('auth:rejected', (data) => {
+    alert(data.reason || 'Ошибка авторизации: неверный пароль лобби!');
+    modalAuth.classList.remove('hidden');
+    statusBar.style.display = 'none';
+  });
 
   // СЕТЕВЫЕ СОБЫТИЯ ОБЛАЧНОГО ШЛЮЗА (TACTICAL NETWORK)
 
@@ -359,6 +459,7 @@
     }
     TacticalMap.updatePlayerMarker(data.player, getTeamColor(data.player.teamId));
     showToast(`Боец ${data.player.callsign} вошел в игру`, getTeamColor(data.player.teamId));
+    updateOnlinePlayersCount();
     renderOrganizerPlayersList();
   });
 
@@ -370,6 +471,7 @@
       p.lng = data.lng;
       p.heading = data.heading;
       p.speed = data.speed;
+      p.accuracy = data.accuracy;
       TacticalMap.updatePlayerMarker(p, getTeamColor(p.teamId));
     }
   });
@@ -383,27 +485,10 @@
       TacticalMap.updatePlayerMarker(p, getTeamColor(p.teamId));
     }
 
-    if (data.playerId === myPlayerId) {
-      document.querySelectorAll('.status-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.status === data.status);
-      });
-
-      if (data.status === 'respawn') {
-        respawnBanner.classList.remove('hidden');
-        if (RespawnManager.mode === 'timer') {
-          RespawnManager.startIndividualTimer();
-        }
-      } else if (data.status === 'alive') {
-        respawnBanner.classList.add('hidden');
-      } else if (data.status === 'hit') {
-        TacticalAudio.playHitSound();
-      }
-    } else {
-      if (data.status === 'hit') {
-        showToast(`💀 ${data.callsign} поражен!`, '#ff334b');
-      } else if (data.status === 'alive') {
-        showToast(`🟢 ${data.callsign} вернулся в строй!`, '#00ff9d');
-      }
+    if (data.status === 'hit') {
+      showToast(`💀 ${data.callsign} поражен!`, '#ff334b');
+    } else if (data.status === 'alive') {
+      showToast(`🟢 ${data.callsign} вернулся в строй!`, '#00ff9d');
     }
   });
 
@@ -438,15 +523,6 @@
     TacticalMap.removeTacticalMarker(data.markerId);
   });
 
-  // КНОПКИ НИЖНЕЙ ПАНЕЛИ СТАТУСА (Один клик под перчатки)
-  document.querySelectorAll('.status-btn').forEach(btn => {
-    btn.onclick = () => {
-      const status = btn.dataset.status;
-      TacticalAudio.playClick();
-      TacticalNetwork.sendStatus(status);
-    };
-  });
-
   // Кнопка подтверждения выхода из мертвяка
   btnRespawnExit.onclick = () => {
     RespawnManager.confirmExit();
@@ -476,20 +552,12 @@
     modalOrganizer.classList.add('hidden');
   };
 
-  // Загрузка KMZ / KML из панели организатора
-  inputUploadKmz.onchange = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      uploadKmzFile(e.target.files[0]);
-    }
-  };
-
   function uploadKmzFile(file) {
     const reader = new FileReader();
     reader.onload = (event) => {
       showToast('Обработка карты полигона...', '#00bfff');
       const text = event.target.result;
 
-      // Если файл текстовый KML — парсим напрямую
       if (typeof text === 'string' && text.includes('<kml')) {
         const boundary = parseKmlRegex(text);
         if (boundary && boundary.features.length > 0) {
@@ -501,7 +569,6 @@
         }
       }
 
-      // Если KMZ (бинарный) или дефолтный полигон
       if (window.DEFAULT_POLYGON_GEOJSON) {
         TacticalMap.renderBoundary(window.DEFAULT_POLYGON_GEOJSON);
         TacticalNetwork.broadcastKMZ(window.DEFAULT_POLYGON_GEOJSON, file.name || 'Полигон Лесной Бор');
@@ -555,20 +622,20 @@
       const teamColor = getTeamColor(p.teamId);
 
       const row = document.createElement('div');
-      row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 6px; border-left: 4px solid ' + teamColor;
+      row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 8px; border-left: 4px solid ' + teamColor;
 
       row.innerHTML = `
         <div>
-          <b style="color: #fff;">${p.callsign}</b> 
+          <b style="color: #fff; font-size: 13px;">${p.callsign}</b> 
           <span style="font-size: 11px; color: ${teamColor};">(${p.teamId})</span>
           <span style="font-size: 11px; color: var(--text-dim); margin-left: 6px;">[${isOrg ? 'Орг' : (isCaptain ? 'Капитан' : 'Боец')}]</span>
         </div>
         <div>
           ${!isOrg ? `
-            <button class="btn-secondary" style="padding: 4px 8px; font-size: 11px;" id="btn_capt_${p.id}">
+            <button class="btn-secondary" style="padding: 6px 10px; font-size: 11px; border-radius: 6px;" id="btn_capt_${p.id}">
               ${isCaptain ? 'Снять капитана' : 'Сделать капитаном'}
             </button>
-          ` : '<span style="font-size: 11px; color: var(--color-green);">Хост</span>'}
+          ` : '<span style="font-size: 11px; color: var(--color-green); font-weight: 700;">Хост</span>'}
         </div>
       `;
 

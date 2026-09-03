@@ -1,7 +1,7 @@
 /**
- * Тактический сетевой менеджер StrikeTac (Cloud Relay)
- * Работает через глобальный защищенный ретранслятор MQTT over WSS (EMQX / HiveMQ)
- * Обеспечивает мгновенную синхронизацию на любых расстояниях 24/7 БЕЗ серверов и ПК
+ * Тактический сетевой менеджер StrikeTac (Cloud Relay v1.2)
+ * Работает через защищенный промышленный WSS-шлюз EMQX
+ * С непрерывной телеметрией (Presence 3s), валидацией пароля и защитой от рассинхрона
  */
 const TacticalNetwork = {
   client: null,
@@ -9,54 +9,56 @@ const TacticalNetwork = {
   playerId: null,
   isHost: false,
   isConnected: false,
-  activeBrokerIndex: 0,
   eventCallbacks: {},
   localLobbyData: null,
   currentCallsign: '',
   currentTeamId: 'yellow',
+  currentStatus: 'alive',
+  currentLat: 55.751244,
+  currentLng: 37.618423,
+  currentHeading: 0,
+  currentSpeed: 0,
+  currentAccuracy: 5,
+  presenceInterval: null,
 
-  // Список глобальных защищенных брокеров с авто-переключением
-  BROKERS: [
-    'wss://broker.emqx.io:8084/mqtt',
-    'wss://broker.hivemq.com:8884/mqtt'
-  ],
+  // Фиксированный глобальный шлюз (без перескакивания)
+  BROKER_URL: 'wss://broker.emqx.io:8084/mqtt',
 
-  // Подключение к облачному ретранслятору
   connect(onSuccess, onError) {
     if (this.client) {
       try { this.client.end(true); } catch(e) {}
     }
 
-    const brokerUrl = this.BROKERS[this.activeBrokerIndex];
     const clientId = 'striketac_' + Math.random().toString(36).substring(2, 10);
-    console.log('[Cloud Relay] Подключение к брокеру:', brokerUrl);
+    console.log('[Cloud Relay] Подключение к шлюзу:', this.BROKER_URL);
 
     try {
-      this.client = mqtt.connect(brokerUrl, {
+      this.client = mqtt.connect(this.BROKER_URL, {
         clientId: clientId,
         clean: true,
-        connectTimeout: 8000,
-        reconnectPeriod: 4000,
+        connectTimeout: 10000,
+        reconnectPeriod: 3000,
         keepalive: 30
       });
     } catch (err) {
-      console.error('[Cloud Relay] Ошибка запуска MQTT клиента:', err);
-      this.switchBroker();
+      console.error('[Cloud Relay] Ошибка запуска клиента:', err);
+      if (onError) onError(err);
       return;
     }
 
     this.client.on('connect', () => {
       this.isConnected = true;
-      console.log('[Cloud Relay] Связь с облачным ретранслятором установлена! Брокер:', brokerUrl);
+      console.log('[Cloud Relay] Связь со шлюзом EMQX активна!');
       if (this.lobbyCode) {
         this.subscribeLobby(this.lobbyCode);
       }
-      if (onSuccess) onSuccess(brokerUrl);
-      this.trigger('connect', { broker: brokerUrl });
+      if (onSuccess) onSuccess(this.BROKER_URL);
+      this.trigger('connect', { broker: this.BROKER_URL });
     });
 
     this.client.on('reconnect', () => {
-      console.log('[Cloud Relay] Переподключение к ретранслятору...');
+      console.log('[Cloud Relay] Переподключение к шлюзу...');
+      this.trigger('reconnect');
     });
 
     this.client.on('close', () => {
@@ -66,13 +68,12 @@ const TacticalNetwork = {
     });
 
     this.client.on('error', (err) => {
-      console.warn('[Cloud Relay] Ошибка связи:', err);
+      console.warn('[Cloud Relay] Сетевая ошибка:', err);
       this.isConnected = false;
-      this.switchBroker();
       if (onError) onError(err);
     });
 
-    // Обработка входящих пакетов
+    // Прием входящих сообщений
     this.client.on('message', (topic, message) => {
       try {
         const data = JSON.parse(message.toString());
@@ -82,17 +83,9 @@ const TacticalNetwork = {
         }
         this.handleIncoming(data);
       } catch (e) {
-        console.error('[Cloud Relay] Ошибка чтения пакета:', e);
+        console.error('[Cloud Relay] Ошибка парсинга пакета:', e);
       }
     });
-  },
-
-  switchBroker() {
-    this.activeBrokerIndex = (this.activeBrokerIndex + 1) % this.BROKERS.length;
-    console.warn('[Cloud Relay] Переключение на резервный шлюз:', this.BROKERS[this.activeBrokerIndex]);
-    setTimeout(() => {
-      this.connect();
-    }, 2000);
   },
 
   // Подписка на виртуальную комнату лобби
@@ -101,16 +94,15 @@ const TacticalNetwork = {
     const topic = 'striketac/' + this.lobbyCode + '/#';
     if (this.client && this.isConnected) {
       this.client.subscribe(topic, { qos: 0 }, (err) => {
-        if (err) console.error('[Cloud Relay] Ошибка подписки на комнату:', err);
+        if (err) console.error('[Cloud Relay] Ошибка подписки:', err);
         else console.log('[Cloud Relay] Подписан на комнату:', topic);
       });
     }
   },
 
-  // Отправка события в комнату
+  // Отправка события
   publish(action, payload = {}) {
     if (!this.client || !this.isConnected || !this.lobbyCode) {
-      console.warn('[Cloud Relay] Нет подключения к шлюзу для отправки:', action);
       return;
     }
 
@@ -125,6 +117,30 @@ const TacticalNetwork = {
     this.client.publish(topic, JSON.stringify(packet), { qos: 0 });
   },
 
+  // Запуск постоянного тактического пинга присутствия (каждые 3 секунды)
+  startPresenceLoop() {
+    if (this.presenceInterval) clearInterval(this.presenceInterval);
+
+    this.presenceInterval = setInterval(() => {
+      if (!this.isConnected || !this.lobbyCode || !this.playerId) return;
+
+      this.publish('player:presence', {
+        player: {
+          id: this.playerId,
+          callsign: this.currentCallsign,
+          teamId: this.currentTeamId,
+          role: this.isHost ? 'organizer' : 'fighter',
+          status: this.currentStatus,
+          lat: this.currentLat,
+          lng: this.currentLng,
+          heading: this.currentHeading,
+          speed: this.currentSpeed,
+          accuracy: this.currentAccuracy
+        }
+      });
+    }, 3000);
+  },
+
   // Создание лобби (Организатор)
   createLobby(data, callback) {
     this.isHost = true;
@@ -132,12 +148,16 @@ const TacticalNetwork = {
     this.playerId = 'p_' + Math.random().toString(36).substring(2, 9);
     this.currentCallsign = data.callsign;
     this.currentTeamId = data.teamId || 'yellow';
+    this.currentStatus = 'alive';
+    if (data.lat) this.currentLat = data.lat;
+    if (data.lng) this.currentLng = data.lng;
 
     this.subscribeLobby(this.lobbyCode);
 
     const initialLobby = {
       code: this.lobbyCode,
       name: data.name || 'Тактическая игра',
+      password: data.password || '', // Пароль лобби
       respawnMode: data.respawnMode || 'helicopter',
       respawnTimeMinutes: data.respawnTimeMinutes || 15,
       helicopterIntervalMinutes: data.helicopterIntervalMinutes || 15,
@@ -156,20 +176,22 @@ const TacticalNetwork = {
           teamId: this.currentTeamId,
           role: 'organizer',
           status: 'alive',
-          lat: data.lat || 55.751244,
-          lng: data.lng || 37.618423,
+          lat: this.currentLat,
+          lng: this.currentLng,
           heading: 0,
-          speed: 0
+          speed: 0,
+          accuracy: 5
         }
       }
     };
 
     this.localLobbyData = initialLobby;
+    this.startPresenceLoop();
 
-    // Анонсируем создание лобби
-    this.publish('player:joined', {
-      player: initialLobby.players[this.playerId]
-    });
+    // Анонс входа
+    setTimeout(() => {
+      this.publish('player:joined', { player: initialLobby.players[this.playerId] });
+    }, 300);
 
     if (callback) {
       callback({
@@ -187,25 +209,29 @@ const TacticalNetwork = {
     this.playerId = 'p_' + Math.random().toString(36).substring(2, 9);
     this.currentCallsign = data.callsign;
     this.currentTeamId = data.teamId || 'yellow';
+    this.currentStatus = 'alive';
+    if (data.lat) this.currentLat = data.lat;
+    if (data.lng) this.currentLng = data.lng;
 
     this.subscribeLobby(this.lobbyCode);
 
-    // Создаем базовое локальное представление
     const myPlayer = {
       id: this.playerId,
       callsign: data.callsign,
       teamId: this.currentTeamId,
       role: 'fighter',
       status: 'alive',
-      lat: data.lat || 55.751244,
-      lng: data.lng || 37.618423,
+      lat: this.currentLat,
+      lng: this.currentLng,
       heading: 0,
-      speed: 0
+      speed: 0,
+      accuracy: 5
     };
 
     this.localLobbyData = {
       code: this.lobbyCode,
       name: 'Игра #' + this.lobbyCode,
+      password: data.password || '',
       respawnMode: 'helicopter',
       respawnTimeMinutes: 15,
       helicopterIntervalMinutes: 15,
@@ -222,12 +248,16 @@ const TacticalNetwork = {
       }
     };
 
-    // Оповещаем комнату о входе
-    this.publish('player:joined', { player: myPlayer });
+    this.startPresenceLoop();
 
-    // Запрашиваем состояние комнаты у хоста/участников
+    // Запрос синхронизации и валидации пароля у хоста
     setTimeout(() => {
-      this.publish('sync:request', { requesterPlayerId: this.playerId });
+      this.publish('sync:request', {
+        requesterPlayerId: this.playerId,
+        password: data.password || '',
+        player: myPlayer
+      });
+      this.publish('player:joined', { player: myPlayer });
     }, 400);
 
     if (callback) {
@@ -239,13 +269,26 @@ const TacticalNetwork = {
     }
   },
 
-  // Обработка входящих сообщений
+  // Обработка входящих пакетов
   handleIncoming(data) {
     const action = data.action;
 
-    // Синхронизация данных для новых игроков
+    // Запрос синхронизации от нового бойца
     if (action === 'sync:request') {
       if (this.localLobbyData) {
+        // Проверка пароля, если мы хост
+        if (this.isHost && this.localLobbyData.password) {
+          if (data.password !== this.localLobbyData.password) {
+            console.warn('[Cloud Relay] Неверный пароль от бойца:', data.requesterPlayerId);
+            this.publish('sync:rejected', {
+              targetPlayerId: data.requesterPlayerId,
+              reason: 'Неверный пароль лобби! Доступ запрещен.'
+            });
+            return;
+          }
+        }
+
+        // Если пароль верен (или не задан) — отправляем полное состояние лобби
         this.publish('sync:response', {
           targetPlayerId: data.requesterPlayerId,
           lobby: this.localLobbyData
@@ -254,17 +297,25 @@ const TacticalNetwork = {
       return;
     }
 
+    // Отклонение авторизации по паролю
+    if (action === 'sync:rejected') {
+      if (data.targetPlayerId === this.playerId) {
+        this.trigger('auth:rejected', { reason: data.reason });
+      }
+      return;
+    }
+
+    // Ответ синхронизации
     if (action === 'sync:response') {
       if (data.targetPlayerId === this.playerId && data.lobby) {
-        // Объединяем информацию о лобби
         const remote = data.lobby;
         if (remote.boundary) this.localLobbyData.boundary = remote.boundary;
         if (remote.boundaryFileName) this.localLobbyData.boundaryFileName = remote.boundaryFileName;
         if (remote.tacticalMarkers) this.localLobbyData.tacticalMarkers = remote.tacticalMarkers;
         if (remote.respawnMode) this.localLobbyData.respawnMode = remote.respawnMode;
         if (remote.helicopterIntervalMinutes) this.localLobbyData.helicopterIntervalMinutes = remote.helicopterIntervalMinutes;
+        if (remote.password) this.localLobbyData.password = remote.password;
 
-        // Добавляем уже присутствующих игроков
         if (remote.players) {
           Object.values(remote.players).forEach(p => {
             if (p.id !== this.playerId) {
@@ -282,7 +333,36 @@ const TacticalNetwork = {
       return;
     }
 
-    // Добавление игрока
+    // Постоянный пинг присутствия бойцов (Heartbeat Presence)
+    if (action === 'player:presence') {
+      if (data.player && data.player.id) {
+        const p = data.player;
+        const isNew = !this.localLobbyData.players[p.id];
+        this.localLobbyData.players[p.id] = p;
+
+        if (isNew) {
+          this.trigger('player:joined', { player: p });
+        } else {
+          this.trigger('player:moved', {
+            playerId: p.id,
+            lat: p.lat,
+            lng: p.lng,
+            heading: p.heading,
+            speed: p.speed,
+            accuracy: p.accuracy
+          });
+          this.trigger('player:status_changed', {
+            playerId: p.id,
+            callsign: p.callsign,
+            teamId: p.teamId,
+            status: p.status
+          });
+        }
+      }
+      return;
+    }
+
+    // Новый игрок подключился
     if (action === 'player:joined') {
       if (this.localLobbyData && data.player) {
         this.localLobbyData.players[data.player.id] = data.player;
@@ -299,12 +379,13 @@ const TacticalNetwork = {
         p.lng = data.lng;
         p.heading = data.heading;
         p.speed = data.speed;
+        p.accuracy = data.accuracy;
       }
       this.trigger('player:moved', data);
       return;
     }
 
-    // Статус
+    // Смена статуса
     if (action === 'player:status_changed') {
       if (this.localLobbyData && this.localLobbyData.players[data.playerId]) {
         this.localLobbyData.players[data.playerId].status = data.status;
@@ -339,7 +420,7 @@ const TacticalNetwork = {
       return;
     }
 
-    // Карта KMZ
+    // Обновление карты KMZ
     if (action === 'kmz:updated') {
       if (this.localLobbyData) {
         this.localLobbyData.boundary = data.boundary;
@@ -349,12 +430,17 @@ const TacticalNetwork = {
       return;
     }
 
-    // Общий триггер
     this.trigger(action, data);
   },
 
   // Отправка GPS
   sendGPS(coords) {
+    this.currentLat = coords.lat;
+    this.currentLng = coords.lng;
+    this.currentHeading = coords.heading;
+    this.currentSpeed = coords.speed;
+    this.currentAccuracy = coords.accuracy;
+
     this.publish('player:moved', {
       playerId: this.playerId,
       lat: coords.lat,
@@ -365,11 +451,13 @@ const TacticalNetwork = {
     });
   },
 
-  // Смена статуса (alive, hit, respawn)
+  // Смена статуса
   sendStatus(status) {
+    this.currentStatus = status;
     if (this.localLobbyData && this.localLobbyData.players[this.playerId]) {
       this.localLobbyData.players[this.playerId].status = status;
     }
+
     this.publish('player:status_changed', {
       playerId: this.playerId,
       callsign: this.currentCallsign,
@@ -390,7 +478,6 @@ const TacticalNetwork = {
     });
   },
 
-  // Тактическая метка
   addTacticalMarker(marker) {
     this.publish('tactical:marker_added', { marker });
   },
@@ -399,7 +486,6 @@ const TacticalNetwork = {
     this.publish('tactical:marker_removed', { markerId });
   },
 
-  // Обновление карты полигона
   broadcastKMZ(boundaryGeojson, fileName) {
     this.publish('kmz:updated', {
       boundary: boundaryGeojson,
@@ -407,7 +493,6 @@ const TacticalNetwork = {
     });
   },
 
-  // Подписка на события
   on(event, callback) {
     if (!this.eventCallbacks[event]) {
       this.eventCallbacks[event] = [];
@@ -425,4 +510,3 @@ const TacticalNetwork = {
 };
 
 window.TacticalNetwork = TacticalNetwork;
-
