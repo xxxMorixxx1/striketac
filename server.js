@@ -298,6 +298,24 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 3.1. Рассылка готового GeoJSON полигона организатором
+  socket.on('kmz:broadcast', (data) => {
+    try {
+      if (!currentLobbyCode) return;
+      const lobby = lobbies[currentLobbyCode];
+      if (lobby) {
+        lobby.boundary = data.boundary;
+        lobby.boundaryFileName = data.fileName || 'polygon.kmz';
+      }
+      io.to(`lobby_${currentLobbyCode}`).emit('kmz:updated', {
+        boundary: data.boundary,
+        fileName: data.fileName || 'polygon.kmz'
+      });
+    } catch (err) {
+      console.error('Ошибка broadcast KMZ:', err);
+    }
+  });
+
   // 4. Обновление GPS координат бойца
   socket.on('gps:update', (coords) => {
     if (!currentLobbyCode || !currentPlayerId) return;

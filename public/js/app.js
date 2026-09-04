@@ -54,6 +54,36 @@
   const btnCloseTactical = document.getElementById('btn-close-tactical');
   const btnSubmitTactical = document.getElementById('btn-submit-tactical-marker');
 
+  const btnSubmitJoin = document.getElementById('btn-submit-join');
+  const btnSubmitCreate = document.getElementById('btn-submit-create');
+  const authNetBanner = document.getElementById('auth-net-banner');
+  const authNetText = document.getElementById('auth-net-text');
+
+  const modalTacticalAlert = document.getElementById('modal-tactical-alert');
+  const alertIcon = document.getElementById('alert-icon');
+  const alertTitle = document.getElementById('alert-title');
+  const alertMessage = document.getElementById('alert-message');
+  const btnCloseAlert = document.getElementById('btn-close-alert');
+
+  function showTacticalAlert(title, message, isError = true) {
+    if (!modalTacticalAlert) {
+      alert(message);
+      return;
+    }
+    if (alertTitle) alertTitle.textContent = title || (isError ? 'ОШИБКА' : 'УВЕДОМЛЕНИЕ');
+    if (alertIcon) alertIcon.textContent = isError ? '❌' : 'ℹ️';
+    if (alertMessage) alertMessage.textContent = message;
+    modalTacticalAlert.classList.remove('hidden');
+    TacticalAudio.playHitSound();
+  }
+
+  if (btnCloseAlert && modalTacticalAlert) {
+    btnCloseAlert.onclick = () => {
+      modalTacticalAlert.classList.add('hidden');
+      TacticalAudio.playClick();
+    };
+  }
+
   // Инициализация карты
   TacticalMap.init('map');
 
@@ -110,16 +140,26 @@
     };
   }
 
-  // Обновление индикатора статуса сети в HUD
+  // Обновление индикатора статуса сети в HUD и на экране входа
   function updateNetStatusDisplay(online, info = '') {
     if (online) {
       netStatusDot.classList.remove('offline');
+      if (authNetBanner) {
+        authNetBanner.className = 'auth-net-banner online';
+        if (authNetText) authNetText.textContent = info || 'Шлюз активен: 24/7 Онлайн';
+      }
       if (serverConnStatus) {
         serverConnStatus.textContent = info || 'Облачный шлюз: 24/7 Онлайн';
         serverConnStatus.style.color = 'var(--color-green)';
       }
+      if (btnSubmitJoin) btnSubmitJoin.disabled = false;
+      if (btnSubmitCreate) btnSubmitCreate.disabled = false;
     } else {
       netStatusDot.classList.add('offline');
+      if (authNetBanner) {
+        authNetBanner.className = 'auth-net-banner offline';
+        if (authNetText) authNetText.textContent = info || 'Связь с облаком отсутствует...';
+      }
       if (serverConnStatus) {
         serverConnStatus.textContent = info || 'Связь с облаком отсутствует';
         serverConnStatus.style.color = 'var(--color-red)';
@@ -127,11 +167,16 @@
     }
   }
 
-  // Запуск подключения к открытому облачному ретранслятору (EMQX WSS)
+  // Запуск подключения к тактической сети (Сервер StrikeTac / Cloud Relay)
   TacticalNetwork.connect(
-    (brokerUrl) => {
-      const host = brokerUrl.replace(/^wss?:\/\//, '').split(/[:/]/)[0];
-      updateNetStatusDisplay(true, `Облачный шлюз: ${host} (24/7 Онлайн)`);
+    (connUrl, transport) => {
+      if (transport === 'socket') {
+        const displayHost = connUrl.replace(/^https?:\/\//, '');
+        updateNetStatusDisplay(true, `⚡ Сервер StrikeTac: ${displayHost} (Онлайн)`);
+      } else {
+        const host = connUrl.replace(/^wss?:\/\//, '').split(/[:/]/)[0];
+        updateNetStatusDisplay(true, `☁️ Облачный шлюз: ${host} (Онлайн)`);
+      }
     },
     (err) => {
       updateNetStatusDisplay(false, 'Связь прервана, переподключение...');
@@ -184,7 +229,7 @@
     }
   };
 
-  // ВХОД В СУЩЕСТВУЮЩУЮ ИГРУ (ТРЕБУЕТСЯ ПАРОЛЬ)
+  // ВХОД В СУЩЕСТВУЮЩУЮ ИГРУ (АСИНХРОННАЯ ПРОВЕРКА ПАРОЛЯ ОРГАНИЗАТОРОМ)
   formJoin.onsubmit = (e) => {
     e.preventDefault();
     const code = document.getElementById('input-join-code').value.trim().toUpperCase();
@@ -192,17 +237,27 @@
     const password = document.getElementById('input-join-password').value.trim();
 
     if (!code || !callsign) {
-      alert('Пожалуйста, введите код игры и ваш позывной');
+      showTacticalAlert('ВНИМАНИЕ', 'Пожалуйста, введите код игры и ваш позывной', false);
       return;
     }
     if (!password) {
-      alert('Пожалуйста, введите пароль лобби игры!');
+      showTacticalAlert('ТРЕБУЕТСЯ ПАРОЛЬ', 'Введите пароль лобби, заданный организатором!', true);
+      return;
+    }
+
+    if (!TacticalNetwork.isConnected) {
+      showTacticalAlert('СЕТЬ НЕ ГОТОВА', 'Связь с тактическим шлюзом еще устанавливается. Подождите 2-3 секунды...', false);
       return;
     }
 
     AppStorage.setCallsign(callsign);
     AppStorage.setLastLobby(code);
     myCallsign = callsign;
+
+    if (btnSubmitJoin) {
+      btnSubmitJoin.disabled = true;
+      btnSubmitJoin.innerHTML = '⏳ ПРОВЕРКА ПАРОЛЯ И ВХОД...';
+    }
 
     TacticalNetwork.joinLobby({
       code,
@@ -212,7 +267,18 @@
       lat: TacticalGPS.currentCoords ? TacticalGPS.currentCoords.lat : 55.751244,
       lng: TacticalGPS.currentCoords ? TacticalGPS.currentCoords.lng : 37.618423
     }, (res) => {
+      if (btnSubmitJoin) {
+        btnSubmitJoin.disabled = false;
+        btnSubmitJoin.innerHTML = 'ВОЙТИ В ИГРУ ⚡';
+      }
+      showToast(`✅ Доступ разрешен! Вход в лобби #${res.lobbyCode}...`, '#00ff9d');
       handleJoinSuccess(res.lobbyCode || code, res.playerId, res.lobby);
+    }, (errReason) => {
+      if (btnSubmitJoin) {
+        btnSubmitJoin.disabled = false;
+        btnSubmitJoin.innerHTML = 'ВОЙТИ В ИГРУ ⚡';
+      }
+      showTacticalAlert('ДОСТУП ЗАПРЕЩЕН', errReason || 'Неверный пароль или лобби не найдено', true);
     });
   };
 
@@ -229,12 +295,22 @@
     const kmzFileInput = document.getElementById('input-create-kmz');
 
     if (!password) {
-      alert('Пожалуйста, задайте пароль игры для бойцов!');
+      showTacticalAlert('ТРЕБУЕТСЯ ПАРОЛЬ', 'Пожалуйста, задайте пароль игры для бойцов!', true);
+      return;
+    }
+
+    if (!TacticalNetwork.isConnected) {
+      showTacticalAlert('СЕТЬ НЕ ГОТОВА', 'Связь с тактическим шлюзом еще устанавливается. Подождите пару секунд...', false);
       return;
     }
 
     AppStorage.setCallsign(callsign);
     myCallsign = callsign;
+
+    if (btnSubmitCreate) {
+      btnSubmitCreate.disabled = true;
+      btnSubmitCreate.innerHTML = '⏳ СОЗДАНИЕ ЛОББИ...';
+    }
 
     TacticalNetwork.createLobby({
       name,
@@ -248,6 +324,10 @@
       lat: TacticalGPS.currentCoords ? TacticalGPS.currentCoords.lat : 55.751244,
       lng: TacticalGPS.currentCoords ? TacticalGPS.currentCoords.lng : 37.618423
     }, (res) => {
+      if (btnSubmitCreate) {
+        btnSubmitCreate.disabled = false;
+        btnSubmitCreate.innerHTML = 'СОЗДАТЬ ЛОББИ И СТАТЬ ХОСТОМ 👑';
+      }
       const finalCode = res.lobbyCode;
       AppStorage.setLastLobby(finalCode);
       handleJoinSuccess(finalCode, res.playerId, res.lobby);
@@ -260,6 +340,12 @@
         TacticalNetwork.broadcastKMZ(window.DEFAULT_POLYGON_GEOJSON, 'Полигон Лесной Бор');
         AppStorage.saveBoundary(finalCode, window.DEFAULT_POLYGON_GEOJSON, 'Полигон Лесной Бор');
       }
+    }, (errReason) => {
+      if (btnSubmitCreate) {
+        btnSubmitCreate.disabled = false;
+        btnSubmitCreate.innerHTML = 'СОЗДАТЬ ЛОББИ И СТАТЬ ХОСТОМ 👑';
+      }
+      showTacticalAlert('ОШИБКА СОЗДАНИЯ', errReason || 'Не удалось создать лобби', true);
     });
   };
 
@@ -437,7 +523,7 @@
 
   // Отклонение авторизации по паролю
   TacticalNetwork.on('auth:rejected', (data) => {
-    alert(data.reason || 'Ошибка авторизации: неверный пароль лобби!');
+    showTacticalAlert('ДОСТУП ЗАПРЕЩЕН', data.reason || 'Ошибка авторизации: неверный пароль лобби!', true);
     modalAuth.classList.remove('hidden');
     statusBar.style.display = 'none';
   });

@@ -731,3 +731,55 @@ body, html {
   from { transform: translateY(-20px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
+
+/* ================== БАННЕР СТАТУСА СЕТИ НА ЭКРАНЕ ВХОДА ================== */
+.auth-net-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: rgba(15, 23, 42, 0.85);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  transition: all 0.3s ease;
+}
+
+.auth-net-banner .net-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.auth-net-banner.online {
+  color: var(--color-green);
+  border-bottom-color: rgba(0, 255, 157, 0.3);
+  background: rgba(0, 255, 157, 0.06);
+}
+.auth-net-banner.online .net-dot {
+  background: var(--color-green);
+  box-shadow: 0 0 8px var(--color-green);
+}
+
+.auth-net-banner.connecting {
+  color: var(--color-yellow);
+  border-bottom-color: rgba(255, 215, 0, 0.3);
+  background: rgba(255, 215, 0, 0.06);
+}
+.auth-net-banner.connecting .net-dot {
+  background: var(--color-yellow);
+  box-shadow: 0 0 8px var(--color-yellow);
+  animation: pulse 1s infinite;
+}
+
+.auth-net-banner.offline {
+  color: var(--color-red);
+  border-bottom-color: rgba(255, 68, 68, 0.3);
+  background: rgba(255, 68, 68, 0.08);
+}
+.auth-net-banner.offline .net-dot {
+  background: var(--color-red);
+  box-shadow: 0 0 8px var(--color-red);
+}

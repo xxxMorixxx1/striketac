@@ -149,6 +149,12 @@
         </button>
       </div>
 
+      <!-- Индикатор готовности тактического шлюза -->
+      <div id="auth-net-banner" class="auth-net-banner connecting">
+        <span class="net-dot"></span>
+        <span id="auth-net-text">Подключение к тактическому шлюзу...</span>
+      </div>
+
       <div class="modal-body">
         <!-- ФОРМА ВХОДА -->
         <form id="form-join" style="display: flex; flex-direction: column; gap: 12px;">
@@ -189,7 +195,7 @@
             <input type="password" id="input-join-password" class="form-input" placeholder="Введите пароль игры" required minlength="2">
           </div>
 
-          <button type="submit" class="btn-primary" style="margin-top: 8px;">
+          <button type="submit" id="btn-submit-join" class="btn-primary" style="margin-top: 8px;">
             ВОЙТИ В ИГРУ ⚡
           </button>
         </form>
@@ -249,7 +255,7 @@
             </label>
           </div>
 
-          <button type="submit" class="btn-primary" style="margin-top: 8px;">
+          <button type="submit" id="btn-submit-create" class="btn-primary" style="margin-top: 8px;">
             СОЗДАТЬ ЛОББИ И СТАТЬ ХОСТОМ 👑
           </button>
         </form>
@@ -342,8 +348,27 @@
   <!-- КОНТЕЙНЕР ДЛЯ ВСПЛЫВАЮЩИХ УВЕДОМЛЕНИЙ -->
   <div id="toast-container"></div>
 
+  <!-- 4. ТАКТИЧЕСКИЙ АЛЕРТ / ОШИБКА (Не блокируется Android WebView) -->
+  <div class="modal-overlay hidden" id="modal-tactical-alert" style="z-index: 10000;">
+    <div class="modal-card" style="border-color: var(--color-red); box-shadow: 0 0 30px rgba(255, 68, 68, 0.4);">
+      <div class="modal-header" style="border-bottom-color: rgba(255, 68, 68, 0.3);">
+        <div class="modal-title" style="color: var(--color-red);">
+          <span id="alert-icon">⚠️</span> <span id="alert-title">ВНИМАНИЕ</span>
+        </div>
+      </div>
+      <div class="modal-body" style="text-align: center; padding: 20px 16px;">
+        <div id="alert-message" style="font-size: 14px; font-weight: 600; line-height: 1.5; color: #fff; margin-bottom: 20px;">
+          Ошибка авторизации: неверный пароль лобби!
+        </div>
+        <button type="button" class="btn-primary" id="btn-close-alert" style="background: var(--color-red); box-shadow: 0 0 15px rgba(255,68,68,0.5);">
+          ПОНЯТНО
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Скрипты -->
-  <script src="/socket.io/socket.io.js"></script>
+  <script src="js/socket.io.min.js"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   
   <script src="js/mqtt.min.js"></script>
