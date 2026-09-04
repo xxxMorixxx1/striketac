@@ -48,9 +48,13 @@ const TacticalNetwork = {
 
     if (!configuredUrl && typeof window !== 'undefined' && window.location && window.location.origin) {
       const origin = window.location.origin;
-      if (origin.startsWith('http') && !origin.includes('capacitor:')) {
+      if (origin.startsWith('http') && !origin.includes('capacitor:') && !origin.includes('localhost')) {
         configuredUrl = origin;
       }
+    }
+
+    if (!configuredUrl) {
+      configuredUrl = 'https://striketac-mavik186.amvera.io';
     }
 
     // Если доступен Socket.IO (библиотека подключена), пробуем подключиться к серверу

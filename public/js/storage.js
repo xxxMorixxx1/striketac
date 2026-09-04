@@ -11,8 +11,10 @@ const AppStorage = {
     SERVER_URL: 'striketac_server_url'
   },
 
+  DEFAULT_SERVER_URL: 'https://striketac-mavik186.amvera.io',
+
   getServerUrl() {
-    return localStorage.getItem(this.KEYS.SERVER_URL) || '';
+    return localStorage.getItem(this.KEYS.SERVER_URL) || this.DEFAULT_SERVER_URL;
   },
 
   setServerUrl(url) {
