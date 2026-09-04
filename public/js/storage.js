@@ -13,14 +13,55 @@ const AppStorage = {
 
   DEFAULT_SERVER_URL: 'https://striketac-mavik186.amvera.io',
 
+  // Получить постоянный уникальный ID устройства (для предотвращения задвоения)
+  getDeviceId() {
+    let devId = localStorage.getItem('striketac_device_id');
+    if (!devId) {
+      devId = 'dev_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now().toString(36);
+      localStorage.setItem('striketac_device_id', devId);
+    }
+    return devId;
+  },
+
+  // Определение адреса сервера: по умолчанию ВСЕГДА текущий адрес сайта (window.location.origin)
   getServerUrl() {
-    return localStorage.getItem(this.KEYS.SERVER_URL) || this.DEFAULT_SERVER_URL;
+    const saved = localStorage.getItem(this.KEYS.SERVER_URL);
+    if (saved && saved.trim()) {
+      return saved.trim();
+    }
+
+    // Если запущено в браузере (не нативный Capacitor контейнер)
+    if (typeof window !== 'undefined' && window.location && window.location.origin) {
+      const origin = window.location.origin;
+      if (origin.startsWith('http') && !origin.includes('capacitor:')) {
+        return origin;
+      }
+    }
+
+    // Резервный адрес для автономного Android APK билда
+    return this.DEFAULT_SERVER_URL;
   },
 
   setServerUrl(url) {
     if (url !== undefined) {
-      localStorage.setItem(this.KEYS.SERVER_URL, (url || '').trim().replace(/\/+$/, ''));
+      const cleaned = (url || '').trim().replace(/\/+$/, '');
+      if (cleaned) {
+        localStorage.setItem(this.KEYS.SERVER_URL, cleaned);
+      } else {
+        localStorage.removeItem(this.KEYS.SERVER_URL);
+      }
     }
+  },
+
+  // Сброс на автоматический адрес текущего сервера
+  resetToAutoServerUrl() {
+    localStorage.removeItem(this.KEYS.SERVER_URL);
+    return this.getServerUrl();
+  },
+
+  // Очистка сессии текущего лобби при выходе
+  clearCurrentLobby() {
+    localStorage.removeItem(this.KEYS.LAST_LOBBY);
   },
 
   getCallsign() {

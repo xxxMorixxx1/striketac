@@ -176,11 +176,13 @@ io.on('connection', (socket) => {
 
       const player = {
         id: playerId,
+        deviceId: data.deviceId || null,
         socketId: socket.id,
         callsign: data.callsign || 'Организатор',
         teamId: data.teamId || lobby.teams[0].id,
         role: 'organizer', // 'organizer', 'captain', 'fighter'
         status: 'alive',   // 'alive', 'hit', 'respawn', 'malfunction'
+        isOffline: false,
         lat: data.lat || 55.751244,
         lng: data.lng || 37.618423,
         heading: 0,
@@ -192,6 +194,8 @@ io.on('connection', (socket) => {
 
       lobby.players[playerId] = player;
       socket.join(`lobby_${code}`);
+
+      console.log(`[Lobby ${code}] Создано лобби. Организатор: "${player.callsign}" (ID: ${playerId})`);
 
       if (callback) {
         callback({
@@ -207,10 +211,10 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 2. Вход игрока в существующее лобби
+  // 2. Вход игрока в существующее лобби (с дедупликацией)
   socket.on('lobby:join', (data, callback) => {
     try {
-      const code = (data.code || '').toUpperCase();
+      const code = (data.code || '').toUpperCase().trim();
       const lobby = lobbies[code];
       if (!lobby) {
         return callback && callback({ error: 'Лобби не найдено. Проверьте код.' });
@@ -220,11 +224,64 @@ io.on('connection', (socket) => {
         return callback && callback({ error: 'Неверный пароль игры' });
       }
 
-      const playerId = `p_${socket.id.substring(0, 8)}`;
+      const inputCallsign = (data.callsign || '').trim();
+      const inputDeviceId = data.deviceId || null;
+
+      // Проверяем: есть ли уже боец с таким позывным или deviceId в этом лобби
+      let existingPlayer = null;
+      for (const pid of Object.keys(lobby.players)) {
+        const p = lobby.players[pid];
+        const sameCallsign = inputCallsign && p.callsign && p.callsign.toLowerCase() === inputCallsign.toLowerCase();
+        const sameDevice = inputDeviceId && p.deviceId && p.deviceId === inputDeviceId;
+        if (sameCallsign || sameDevice) {
+          existingPlayer = p;
+          break;
+        }
+      }
+
+      // Если боец найден (переподключение, обновление вкладки или возврат в приложение)
+      if (existingPlayer) {
+        // Отменяем таймер удаления оффлайн-игрока
+        if (existingPlayer.disconnectTimer) {
+          clearTimeout(existingPlayer.disconnectTimer);
+          existingPlayer.disconnectTimer = null;
+        }
+
+        existingPlayer.socketId = socket.id;
+        existingPlayer.isOffline = false;
+        existingPlayer.disconnectTime = null;
+        if (data.teamId) existingPlayer.teamId = data.teamId;
+        if (data.lat) existingPlayer.lat = data.lat;
+        if (data.lng) existingPlayer.lng = data.lng;
+        if (inputDeviceId) existingPlayer.deviceId = inputDeviceId;
+        existingPlayer.lastUpdated = Date.now();
+
+        currentLobbyCode = code;
+        currentPlayerId = existingPlayer.id;
+        socket.join(`lobby_${code}`);
+
+        console.log(`[Lobby ${code}] 🔄 Игрок "${existingPlayer.callsign}" переподключился (ID: ${existingPlayer.id})`);
+
+        // Оповещаем остальных, что игрок вернулся
+        socket.to(`lobby_${code}`).emit('player:joined', { player: existingPlayer, isReconnected: true });
+
+        if (callback) {
+          callback({
+            success: true,
+            playerId: existingPlayer.id,
+            isReconnected: true,
+            lobby: getPublicLobbyData(lobby)
+          });
+        }
+        return;
+      }
+
+      // Иначе создаем нового бойца
+      const playerId = `p_${socket.id.substring(0, 8)}_${Math.floor(100 + Math.random() * 900)}`;
       currentLobbyCode = code;
       currentPlayerId = playerId;
 
-      // Определение роли: если организатор заходит снова или обычный боец
+      // Определение роли: если сокет организатора заходит снова или обычный боец
       let role = 'fighter';
       if (socket.id === lobby.organizerSocketId) {
         role = 'organizer';
@@ -232,11 +289,13 @@ io.on('connection', (socket) => {
 
       const player = {
         id: playerId,
+        deviceId: inputDeviceId,
         socketId: socket.id,
-        callsign: data.callsign || `Боец_${Math.floor(100 + Math.random() * 900)}`,
+        callsign: inputCallsign || `Боец_${Math.floor(100 + Math.random() * 900)}`,
         teamId: data.teamId || lobby.teams[0].id,
         role,
         status: 'alive',
+        isOffline: false,
         lat: data.lat || 55.751244,
         lng: data.lng || 37.618423,
         heading: 0,
@@ -248,6 +307,8 @@ io.on('connection', (socket) => {
 
       lobby.players[playerId] = player;
       socket.join(`lobby_${code}`);
+
+      console.log(`[Lobby ${code}] ➕ Новый боец: "${player.callsign}" (ID: ${playerId})`);
 
       // Оповещаем остальных игроков о новом бойце
       socket.to(`lobby_${code}`).emit('player:joined', { player });
@@ -332,9 +393,13 @@ io.on('connection', (socket) => {
     player.accuracy = coords.accuracy || 5;
     player.lastUpdated = Date.now();
 
-    // Трансляция координат всем участникам лобби
+    // Трансляция координат всем участникам лобби с полными метаданными игрока
     socket.to(`lobby_${currentLobbyCode}`).emit('player:moved', {
       playerId: currentPlayerId,
+      callsign: player.callsign,
+      teamId: player.teamId,
+      role: player.role,
+      status: player.status,
       lat: player.lat,
       lng: player.lng,
       heading: player.heading,
@@ -519,18 +584,106 @@ io.on('connection', (socket) => {
     if (callback) callback(heliData);
   });
 
-  // 12. Отключение игрока
-  socket.on('disconnect', () => {
+  // 12. Явный выход игрока из лобби (кнопка «Выйти из лобби»)
+  socket.on('lobby:leave', (callback) => {
     if (currentLobbyCode && currentPlayerId) {
       const lobby = lobbies[currentLobbyCode];
       if (lobby && lobby.players[currentPlayerId]) {
-        // Помечаем игрока оффлайн
+        const player = lobby.players[currentPlayerId];
+        if (player.disconnectTimer) {
+          clearTimeout(player.disconnectTimer);
+          player.disconnectTimer = null;
+        }
+        const callsign = player.callsign;
+        delete lobby.players[currentPlayerId];
+        socket.leave(`lobby_${currentLobbyCode}`);
+
+        io.to(`lobby_${currentLobbyCode}`).emit('player:left', {
+          playerId: currentPlayerId,
+          callsign: callsign,
+          reason: 'manual_exit'
+        });
+
+        console.log(`[Lobby ${currentLobbyCode}] 🚪 Боец "${callsign}" (ID: ${currentPlayerId}) вышел из лобби.`);
+      }
+      currentLobbyCode = null;
+      currentPlayerId = null;
+    }
+    if (callback) callback({ success: true });
+  });
+
+  // 13. Исключение / удаление игрока организатором
+  socket.on('lobby:kick_player', (data, callback) => {
+    if (!currentLobbyCode || !currentPlayerId) return;
+    const lobby = lobbies[currentLobbyCode];
+    if (!lobby) return;
+
+    const sender = lobby.players[currentPlayerId];
+    if (!sender || sender.role !== 'organizer') {
+      return callback && callback({ error: 'Только организатор может удалять игроков' });
+    }
+
+    const targetId = data.targetPlayerId;
+    if (targetId && lobby.players[targetId]) {
+      const target = lobby.players[targetId];
+      if (target.disconnectTimer) {
+        clearTimeout(target.disconnectTimer);
+        target.disconnectTimer = null;
+      }
+      const callsign = target.callsign;
+      delete lobby.players[targetId];
+
+      io.to(`lobby_${currentLobbyCode}`).emit('player:left', {
+        playerId: targetId,
+        callsign: callsign,
+        reason: 'kicked'
+      });
+
+      console.log(`[Lobby ${currentLobbyCode}] ⛔ Организатор удалил игрока "${callsign}" (ID: ${targetId}).`);
+      if (callback) callback({ success: true });
+    } else {
+      if (callback) callback({ error: 'Игрок не найден' });
+    }
+  });
+
+  // 14. Отключение сокета игрока (обрыв соединения, закрытие вкладки)
+  socket.on('disconnect', (reason) => {
+    if (currentLobbyCode && currentPlayerId) {
+      const lobby = lobbies[currentLobbyCode];
+      if (lobby && lobby.players[currentPlayerId]) {
         const player = lobby.players[currentPlayerId];
         player.isOffline = true;
+        player.disconnectTime = Date.now();
+
+        console.log(`[Lobby ${currentLobbyCode}] ⚠️ Игрок "${player.callsign}" потерял связь (${reason}).`);
+
         io.to(`lobby_${currentLobbyCode}`).emit('player:offline', {
           playerId: currentPlayerId,
           callsign: player.callsign
         });
+
+        // Если это не организатор, запускаем таймаут (60 сек):
+        // Если за 60 секунд боец не переподключился (закрыл вкладку/приложение), удаляем его из лобби
+        if (player.role !== 'organizer') {
+          if (player.disconnectTimer) {
+            clearTimeout(player.disconnectTimer);
+          }
+          const savedCode = currentLobbyCode;
+          const savedPid = currentPlayerId;
+          player.disconnectTimer = setTimeout(() => {
+            const currentLobby = lobbies[savedCode];
+            if (currentLobby && currentLobby.players[savedPid] && currentLobby.players[savedPid].isOffline) {
+              const cs = currentLobby.players[savedPid].callsign;
+              delete currentLobby.players[savedPid];
+              io.to(`lobby_${savedCode}`).emit('player:left', {
+                playerId: savedPid,
+                callsign: cs,
+                reason: 'timeout'
+              });
+              console.log(`[Lobby ${savedCode}] ⏱️ Оффлайн-игрок "${cs}" удален по таймауту.`);
+            }
+          }, 60000);
+        }
       }
     }
   });

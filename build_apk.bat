@@ -20,8 +20,9 @@ if %ERRORLEVEL% NEQ 0 (
 )
 cd ..
 
-echo [3/3] Copying APK to root directory...
+echo [3/3] Copying APK to root directory and public web folder...
 copy /Y android\app\build\outputs\apk\debug\app-debug.apk StrikeTac.apk
+copy /Y android\app\build\outputs\apk\debug\app-debug.apk public\StrikeTac.apk
 echo ===================================================
-echo BUILD SUCCESS: StrikeTac.apk updated!
+echo BUILD SUCCESS: StrikeTac.apk updated (v1.0.1)!
 echo ===================================================

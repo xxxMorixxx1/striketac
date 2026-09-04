@@ -1,6 +1,7 @@
 /**
- * Главный координатор клиентской логики StrikeTac (v1.2)
- * Полная поддержка Cloud Relay, фильтрация GPS, пароли лобби и Safe Area
+ * Главный координатор клиентской логики StrikeTac (v3.0)
+ * Полная поддержка выделенного сокет-сервера, авто-переподключение при обрыве сети,
+ * устойчивая сессия бойцов, спутник Google Hybrid, кнопка выхода и защита от задвоения.
  */
 (function() {
   let myPlayerId = null;
@@ -10,7 +11,7 @@
   let myCallsign = '';
   let currentLobbyData = null;
 
-  // DOM Элементы
+  // DOM Элементы: HUD
   const netStatusDot = document.getElementById('net-status-dot');
   const hudLobbyCode = document.getElementById('hud-lobby-code');
   const hudPlayerBadge = document.getElementById('hud-player-badge');
@@ -18,29 +19,58 @@
   const hudRoleIcon = document.getElementById('hud-role-icon');
   const hudGpsAccuracy = document.getElementById('hud-gps-accuracy');
   const hudPlayersCount = document.getElementById('hud-players-count');
+  const btnLayerToggle = document.getElementById('btn-layer-toggle');
+  const btnLeaveLobby = document.getElementById('btn-leave-lobby');
+  const btnMenu = document.getElementById('btn-menu');
 
+  // Баннер обрыва связи
+  const reconnectBanner = document.getElementById('reconnect-banner');
+  const reconnectText = document.getElementById('reconnect-text');
+  const btnReconnectNow = document.getElementById('btn-reconnect-now');
+
+  // Окно авторизации / входа
   const modalAuth = document.getElementById('modal-auth');
   const tabBtnJoin = document.getElementById('tab-btn-join');
   const tabBtnCreate = document.getElementById('tab-btn-create');
   const formJoin = document.getElementById('form-join');
   const formCreate = document.getElementById('form-create');
+  const btnSubmitJoin = document.getElementById('btn-submit-join');
+  const btnSubmitCreate = document.getElementById('btn-submit-create');
+  const authNetBanner = document.getElementById('auth-net-banner');
+  const authNetText = document.getElementById('auth-net-text');
 
-  // Панель настройки адреса сервера/шлюза
+  // Панель настройки сервера
   const btnToggleServerSettings = document.getElementById('btn-toggle-server-settings');
   const serverSettingsPanel = document.getElementById('server-settings-panel');
   const inputCustomServerUrl = document.getElementById('input-custom-server-url');
   const btnSaveServerUrl = document.getElementById('btn-save-server-url');
+  const btnResetServerUrl = document.getElementById('btn-reset-server-url');
   const serverConnStatus = document.getElementById('server-conn-status');
 
+  // Игровые панели
   const statusBar = document.getElementById('status-bar');
   const respawnBanner = document.getElementById('respawn-banner');
   const btnRespawnExit = document.getElementById('btn-respawn-exit');
-
-  const btnLayerToggle = document.getElementById('btn-layer-toggle');
   const btnGpsFollow = document.getElementById('btn-gps-follow');
   const btnAddTactical = document.getElementById('btn-add-tactical');
   const btnOrganizerPanel = document.getElementById('btn-organizer-panel');
 
+  // Модальное тактическое меню
+  const modalTacticalMenu = document.getElementById('modal-tactical-menu');
+  const btnCloseMenu = document.getElementById('btn-close-menu');
+  const menuLobbyCode = document.getElementById('menu-lobby-code');
+  const menuCallsign = document.getElementById('menu-callsign');
+  const menuTeam = document.getElementById('menu-team');
+  const menuServerUrl = document.getElementById('menu-server-url');
+  const menuBtnFitPlayers = document.getElementById('menu-btn-fit-players');
+  const menuLayerGoogle = document.getElementById('menu-layer-google');
+  const menuLayerOsm = document.getElementById('menu-layer-osm');
+  const menuLayerEsri = document.getElementById('menu-layer-esri');
+  const menuBtnReconnect = document.getElementById('menu-btn-reconnect');
+  const menuBtnOrganizer = document.getElementById('menu-btn-organizer');
+  const menuBtnLeave = document.getElementById('menu-btn-leave');
+
+  // Панель организатора
   const modalOrganizer = document.getElementById('modal-organizer');
   const btnCloseOrganizer = document.getElementById('btn-close-organizer');
   const inputUploadKmz = document.getElementById('input-upload-kmz-field');
@@ -50,15 +80,12 @@
   const inputCreateKmz = document.getElementById('input-create-kmz');
   const createKmzLabel = document.getElementById('create-kmz-label');
 
+  // Тактическая метка
   const modalTactical = document.getElementById('modal-tactical-marker');
   const btnCloseTactical = document.getElementById('btn-close-tactical');
   const btnSubmitTactical = document.getElementById('btn-submit-tactical-marker');
 
-  const btnSubmitJoin = document.getElementById('btn-submit-join');
-  const btnSubmitCreate = document.getElementById('btn-submit-create');
-  const authNetBanner = document.getElementById('auth-net-banner');
-  const authNetText = document.getElementById('auth-net-text');
-
+  // Алерт / Ошибка
   const modalTacticalAlert = document.getElementById('modal-tactical-alert');
   const alertIcon = document.getElementById('alert-icon');
   const alertTitle = document.getElementById('alert-title');
@@ -74,23 +101,34 @@
     if (alertIcon) alertIcon.textContent = isError ? '❌' : 'ℹ️';
     if (alertMessage) alertMessage.textContent = message;
     modalTacticalAlert.classList.remove('hidden');
-    TacticalAudio.playHitSound();
+    if (window.TacticalAudio) TacticalAudio.playHitSound();
   }
 
   if (btnCloseAlert && modalTacticalAlert) {
     btnCloseAlert.onclick = () => {
       modalTacticalAlert.classList.add('hidden');
-      TacticalAudio.playClick();
+      if (window.TacticalAudio) TacticalAudio.playClick();
     };
   }
 
-  // Инициализация карты
+  // 1. Инициализация карты (спутник Google Hybrid по умолчанию)
   TacticalMap.init('map');
 
-  // Инициализация полей сервера в UI
-  if (inputCustomServerUrl) {
-    inputCustomServerUrl.value = AppStorage.getServerUrl();
+  // 2. Инициализация настроек сервера
+  function updateServerDisplay() {
+    const currentUrl = AppStorage.getServerUrl();
+    if (inputCustomServerUrl) {
+      inputCustomServerUrl.value = currentUrl;
+    }
+    if (serverConnStatus) {
+      const isAuto = !localStorage.getItem(AppStorage.KEYS.SERVER_URL);
+      serverConnStatus.textContent = `${isAuto ? 'Авто: ' : 'Пользовательский: '} ${currentUrl}`;
+    }
+    if (menuServerUrl) {
+      menuServerUrl.textContent = currentUrl;
+    }
   }
+  updateServerDisplay();
 
   if (btnToggleServerSettings && serverSettingsPanel) {
     btnToggleServerSettings.onclick = () => {
@@ -103,22 +141,33 @@
     btnSaveServerUrl.onclick = () => {
       const newUrl = inputCustomServerUrl.value.trim().replace(/\/+$/, '');
       AppStorage.setServerUrl(newUrl);
-      showToast('Настройки сохранены! Переподключение...', '#00ff9d');
-      setTimeout(() => {
-        location.reload();
-      }, 700);
+      updateServerDisplay();
+      showToast('Адрес сервера сохранен! Переподключение...', '#00ff9d');
+      TacticalNetwork.connect();
     };
   }
 
-  // Загрузка сохраненного позывного и лобби
+  if (btnResetServerUrl) {
+    btnResetServerUrl.onclick = () => {
+      const autoUrl = AppStorage.resetToAutoServerUrl();
+      updateServerDisplay();
+      showToast(`Сброшено на текущий адрес сайта: ${autoUrl}`, '#00ff9d');
+      TacticalNetwork.connect();
+    };
+  }
+
+  // Загрузка сохраненного позывного и кода лобби
   const savedCallsign = AppStorage.getCallsign();
   if (savedCallsign) {
-    document.getElementById('input-join-callsign').value = savedCallsign;
-    document.getElementById('input-create-callsign').value = savedCallsign;
+    const inpJoin = document.getElementById('input-join-callsign');
+    const inpCreate = document.getElementById('input-create-callsign');
+    if (inpJoin) inpJoin.value = savedCallsign;
+    if (inpCreate) inpCreate.value = savedCallsign;
   }
   const savedLobby = AppStorage.getLastLobby();
   if (savedLobby) {
-    document.getElementById('input-join-code').value = savedLobby;
+    const inpCode = document.getElementById('input-join-code');
+    if (inpCode) inpCode.value = savedLobby;
   }
 
   // Индикация выбранных файлов в UI
@@ -140,50 +189,94 @@
     };
   }
 
-  // Обновление индикатора статуса сети в HUD и на экране входа
+  // 3. Обновление статуса сети
   function updateNetStatusDisplay(online, info = '') {
     if (online) {
-      netStatusDot.classList.remove('offline');
+      if (netStatusDot) {
+        netStatusDot.classList.remove('offline');
+        netStatusDot.title = 'Сервер в сети: ' + TacticalNetwork.serverUrl;
+      }
       if (authNetBanner) {
         authNetBanner.className = 'auth-net-banner online';
-        if (authNetText) authNetText.textContent = info || 'Шлюз активен: 24/7 Онлайн';
+        if (authNetText) authNetText.textContent = info || 'Сервер активен: Онлайн ⚡';
       }
       if (serverConnStatus) {
-        serverConnStatus.textContent = info || 'Облачный шлюз: 24/7 Онлайн';
+        serverConnStatus.textContent = info || 'Сервер активен (Онлайн)';
         serverConnStatus.style.color = 'var(--color-green)';
+      }
+      if (reconnectBanner) {
+        reconnectBanner.classList.add('hidden');
       }
       if (btnSubmitJoin) btnSubmitJoin.disabled = false;
       if (btnSubmitCreate) btnSubmitCreate.disabled = false;
     } else {
-      netStatusDot.classList.add('offline');
+      if (netStatusDot) {
+        netStatusDot.classList.add('offline');
+        netStatusDot.title = 'Связь с сервером прервана';
+      }
       if (authNetBanner) {
         authNetBanner.className = 'auth-net-banner offline';
-        if (authNetText) authNetText.textContent = info || 'Связь с облаком отсутствует...';
+        if (authNetText) authNetText.textContent = info || 'Связь с сервером прервана...';
       }
       if (serverConnStatus) {
-        serverConnStatus.textContent = info || 'Связь с облаком отсутствует';
+        serverConnStatus.textContent = info || 'Связь с сервером отсутствует';
         serverConnStatus.style.color = 'var(--color-red)';
+      }
+      // Если игрок сейчас в активной игре — показываем плавающий баннер реконнекта
+      if (currentLobbyCode && reconnectBanner) {
+        reconnectBanner.classList.remove('hidden');
+        if (reconnectText) reconnectText.textContent = 'Потеря связи с сервером. Ожидание сети...';
       }
     }
   }
 
-  // Запуск подключения к тактической сети (Сервер StrikeTac / Cloud Relay)
+  // 4. Подключение к выделенному серверу StrikeTac
   TacticalNetwork.connect(
-    (connUrl, transport) => {
-      if (transport === 'socket') {
-        const displayHost = connUrl.replace(/^https?:\/\//, '');
-        updateNetStatusDisplay(true, `⚡ Сервер StrikeTac: ${displayHost} (Онлайн)`);
-      } else {
-        const host = connUrl.replace(/^wss?:\/\//, '').split(/[:/]/)[0];
-        updateNetStatusDisplay(true, `☁️ Облачный шлюз: ${host} (Онлайн)`);
-      }
+    (connUrl) => {
+      const displayHost = connUrl.replace(/^https?:\/\//, '');
+      updateNetStatusDisplay(true, `⚡ Сервер StrikeTac: ${displayHost} (Онлайн)`);
     },
     (err) => {
-      updateNetStatusDisplay(false, 'Связь прервана, переподключение...');
+      updateNetStatusDisplay(false, 'Связь с сервером прервана, переподключение...');
     }
   );
 
-  // Переключение вкладок входа
+  // Сетевые слушатели состояния соединения
+  TacticalNetwork.on('connection:status', (isConnected) => {
+    if (isConnected) {
+      updateNetStatusDisplay(true);
+    } else {
+      updateNetStatusDisplay(false);
+    }
+  });
+
+  TacticalNetwork.on('connection:reconnecting', (attempt) => {
+    if (currentLobbyCode && reconnectBanner) {
+      reconnectBanner.classList.remove('hidden');
+      if (reconnectText) reconnectText.textContent = `Переподключение к серверу (попытка #${attempt})...`;
+    }
+  });
+
+  TacticalNetwork.on('connection:restored', () => {
+    showToast('Связь с сервером восстановлена! ⚡', '#00ff9d');
+    if (reconnectBanner) reconnectBanner.classList.add('hidden');
+  });
+
+  TacticalNetwork.on('connection:lost', () => {
+    if (currentLobbyCode) {
+      showToast('⚠️ Потеря связи с сервером. Авто-переподключение...', '#ff334b');
+    }
+  });
+
+  // Кнопка немедленного переподключения
+  if (btnReconnectNow) {
+    btnReconnectNow.onclick = () => {
+      TacticalNetwork.reconnect();
+      showToast('Попытка переподключения к серверу...', '#00bfff');
+    };
+  }
+
+  // Переключение вкладок входа / создания
   tabBtnJoin.onclick = () => {
     tabBtnJoin.classList.add('active');
     tabBtnJoin.style.borderBottom = '2px solid var(--color-green)';
@@ -215,21 +308,23 @@
   const groupHelicopter = document.getElementById('group-helicopter-interval');
   const groupTimer = document.getElementById('group-timer-minutes');
 
-  selectRespawnMode.onchange = () => {
-    const mode = selectRespawnMode.value;
-    if (mode === 'helicopter') {
-      groupHelicopter.style.display = 'block';
-      groupTimer.style.display = 'none';
-    } else if (mode === 'timer') {
-      groupHelicopter.style.display = 'none';
-      groupTimer.style.display = 'block';
-    } else {
-      groupHelicopter.style.display = 'none';
-      groupTimer.style.display = 'none';
-    }
-  };
+  if (selectRespawnMode) {
+    selectRespawnMode.onchange = () => {
+      const mode = selectRespawnMode.value;
+      if (mode === 'helicopter') {
+        if (groupHelicopter) groupHelicopter.style.display = 'block';
+        if (groupTimer) groupTimer.style.display = 'none';
+      } else if (mode === 'timer') {
+        if (groupHelicopter) groupHelicopter.style.display = 'none';
+        if (groupTimer) groupTimer.style.display = 'block';
+      } else {
+        if (groupHelicopter) groupHelicopter.style.display = 'none';
+        if (groupTimer) groupTimer.style.display = 'none';
+      }
+    };
+  }
 
-  // ВХОД В СУЩЕСТВУЮЩУЮ ИГРУ (АСИНХРОННАЯ ПРОВЕРКА ПАРОЛЯ ОРГАНИЗАТОРОМ)
+  // 5. Вход в существующую игру
   formJoin.onsubmit = (e) => {
     e.preventDefault();
     const code = document.getElementById('input-join-code').value.trim().toUpperCase();
@@ -246,7 +341,8 @@
     }
 
     if (!TacticalNetwork.isConnected) {
-      showTacticalAlert('СЕТЬ НЕ ГОТОВА', 'Связь с тактическим шлюзом еще устанавливается. Подождите 2-3 секунды...', false);
+      showTacticalAlert('СЕТЬ НЕ ГОТОВА', 'Связь с сервером устанавливается. Подождите 1-2 секунды или нажмите «Авто» в настройках сервера...', false);
+      TacticalNetwork.connect();
       return;
     }
 
@@ -256,7 +352,7 @@
 
     if (btnSubmitJoin) {
       btnSubmitJoin.disabled = true;
-      btnSubmitJoin.innerHTML = '⏳ ПРОВЕРКА ПАРОЛЯ И ВХОД...';
+      btnSubmitJoin.innerHTML = '⏳ ВХОД В ЛОББИ...';
     }
 
     TacticalNetwork.joinLobby({
@@ -271,7 +367,8 @@
         btnSubmitJoin.disabled = false;
         btnSubmitJoin.innerHTML = 'ВОЙТИ В ИГРУ ⚡';
       }
-      showToast(`✅ Доступ разрешен! Вход в лобби #${res.lobbyCode}...`, '#00ff9d');
+      const isRecon = res.isReconnected;
+      showToast(isRecon ? `✅ Сессия восстановлена! С возвращением, ${callsign}!` : `✅ Вход в лобби #${res.lobbyCode}...`, '#00ff9d');
       handleJoinSuccess(res.lobbyCode || code, res.playerId, res.lobby);
     }, (errReason) => {
       if (btnSubmitJoin) {
@@ -282,14 +379,14 @@
     });
   };
 
-  // СОЗДАНИЕ НОВОЙ ИГРЫ (ОРГАНИЗАТОР, ОБЯЗАТЕЛЬНЫЙ ПАРОЛЬ)
+  // 6. Создание новой игры организатором
   formCreate.onsubmit = (e) => {
     e.preventDefault();
     const name = document.getElementById('input-create-name').value.trim();
     const code = document.getElementById('input-create-code').value.trim().toUpperCase();
     const password = document.getElementById('input-create-password').value.trim();
     const callsign = document.getElementById('input-create-callsign').value.trim();
-    const respawnMode = selectRespawnMode.value;
+    const respawnMode = selectRespawnMode ? selectRespawnMode.value : 'helicopter';
     const helicopterInterval = parseInt(document.getElementById('select-helicopter-interval').value) || 15;
     const timerMinutes = parseInt(document.getElementById('input-timer-minutes').value) || 15;
     const kmzFileInput = document.getElementById('input-create-kmz');
@@ -300,7 +397,8 @@
     }
 
     if (!TacticalNetwork.isConnected) {
-      showTacticalAlert('СЕТЬ НЕ ГОТОВА', 'Связь с тактическим шлюзом еще устанавливается. Подождите пару секунд...', false);
+      showTacticalAlert('СЕТЬ НЕ ГОТОВА', 'Связь с сервером устанавливается. Подождите пару секунд...', false);
+      TacticalNetwork.connect();
       return;
     }
 
@@ -349,7 +447,7 @@
     });
   };
 
-  // УСПЕШНЫЙ ВХОД В ЛОББИ
+  // 7. УСПЕШНЫЙ ВХОД В ЛОББИ
   function handleJoinSuccess(code, playerId, lobby) {
     currentLobbyCode = code;
     myPlayerId = playerId;
@@ -360,6 +458,7 @@
     if (me) {
       myRole = me.role;
       myTeamId = me.teamId;
+      myCallsign = me.callsign || myCallsign;
     }
 
     // Обновляем верхний HUD
@@ -368,6 +467,11 @@
     hudCallsignDisplay.textContent = myCallsign;
     updateRoleIcon();
     updateOnlinePlayersCount();
+
+    // Показываем кнопку выхода из лобби в хедере
+    if (btnLeaveLobby) {
+      btnLeaveLobby.style.display = 'flex';
+    }
 
     // Скрываем окно авторизации и показываем панель статуса
     modalAuth.classList.add('hidden');
@@ -391,9 +495,11 @@
     if (lobby.boundary) {
       TacticalMap.renderBoundary(lobby.boundary);
       AppStorage.saveBoundary(code, lobby.boundary, lobby.boundaryFileName);
+      if (kmzStatusText) kmzStatusText.textContent = `Загружен: ${lobby.boundaryFileName || 'Полигон'}`;
     } else if (window.DEFAULT_POLYGON_GEOJSON) {
       TacticalMap.renderBoundary(window.DEFAULT_POLYGON_GEOJSON);
       AppStorage.saveBoundary(code, window.DEFAULT_POLYGON_GEOJSON, 'Полигон Лесной Бор');
+      if (kmzStatusText) kmzStatusText.textContent = 'Загружен: Полигон Лесной Бор';
     }
 
     // Отрисовка всех текущих игроков на карте
@@ -431,8 +537,16 @@
         }
       }
 
+      // Отправляем координаты союзникам (теперь без падений ошибок!)
       TacticalNetwork.sendGPS(coords);
     });
+
+    // Если в лобби уже несколько игроков — мягко центрируем обзор на всех
+    setTimeout(() => {
+      if (lobby && lobby.players && Object.keys(lobby.players).length > 1) {
+        TacticalMap.fitAllPlayers();
+      }
+    }, 600);
 
     showToast(`Вы вошли в игру #${code}!`, '#00ff9d');
   }
@@ -448,6 +562,7 @@
 
   // Обновление иконки роли бойца в HUD
   function updateRoleIcon() {
+    if (!hudRoleIcon) return;
     if (myRole === 'organizer') {
       hudRoleIcon.textContent = '👑';
     } else if (myRole === 'captain') {
@@ -458,16 +573,12 @@
   }
 
   function updatePermissionButtons() {
-    if (myRole === 'organizer') {
-      btnOrganizerPanel.style.display = 'flex';
-      btnAddTactical.style.display = 'flex';
-    } else if (myRole === 'captain') {
-      btnOrganizerPanel.style.display = 'none';
-      btnAddTactical.style.display = 'flex';
-    } else {
-      btnOrganizerPanel.style.display = 'none';
-      btnAddTactical.style.display = 'none';
-    }
+    const isOrg = myRole === 'organizer';
+    const isCapt = myRole === 'captain';
+
+    if (btnOrganizerPanel) btnOrganizerPanel.style.display = isOrg ? 'flex' : 'none';
+    if (btnAddTactical) btnAddTactical.style.display = (isOrg || isCapt) ? 'flex' : 'none';
+    if (menuBtnOrganizer) menuBtnOrganizer.style.display = isOrg ? 'block' : 'none';
   }
 
   function getTeamColor(teamId) {
@@ -482,16 +593,15 @@
       TacticalMap.updatePlayerMarker(player, getTeamColor(player.teamId));
     });
     updateOnlinePlayersCount();
+    renderOrganizerPlayersList();
   }
 
-  // МГНОВЕННОЕ ЛОКАЛЬНОЕ ПЕРЕКЛЮЧЕНИЕ СТАТУСА БОЙЦА (Один клик под перчатки)
+  // МГНОВЕННОЕ ЛОКАЛЬНОЕ ПЕРЕКЛЮЧЕНИЕ СТАТУСА БОЙЦА
   function setLocalStatus(status) {
-    // 1. Мгновенно подсвечиваем нужную кнопку
     document.querySelectorAll('.status-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.status === status);
     });
 
-    // 2. Управляем баннером респауна и звуками
     if (status === 'respawn') {
       respawnBanner.classList.remove('hidden');
       if (RespawnManager.mode === 'timer') {
@@ -500,35 +610,82 @@
     } else if (status === 'alive') {
       respawnBanner.classList.add('hidden');
     } else if (status === 'hit') {
-      TacticalAudio.playHitSound();
+      if (window.TacticalAudio) TacticalAudio.playHitSound();
     }
 
-    // 3. Мгновенно обновляем свою метку на карте
     if (currentLobbyData && currentLobbyData.players && currentLobbyData.players[myPlayerId]) {
       currentLobbyData.players[myPlayerId].status = status;
       TacticalMap.updatePlayerMarker(currentLobbyData.players[myPlayerId], getTeamColor(myTeamId));
     }
 
-    // 4. Отправляем в облачный шлюз
     TacticalNetwork.sendStatus(status);
   }
 
   document.querySelectorAll('.status-btn').forEach(btn => {
     btn.onclick = () => {
       const status = btn.dataset.status;
-      TacticalAudio.playClick();
+      if (window.TacticalAudio) TacticalAudio.playClick();
       setLocalStatus(status);
     };
   });
 
-  // Отклонение авторизации по паролю
-  TacticalNetwork.on('auth:rejected', (data) => {
-    showTacticalAlert('ДОСТУП ЗАПРЕЩЕН', data.reason || 'Ошибка авторизации: неверный пароль лобби!', true);
-    modalAuth.classList.remove('hidden');
-    statusBar.style.display = 'none';
-  });
+  // 8. ВЫХОД ИЗ ТЕКУЩЕГО ЛОББИ (ЧИСТОЕ УДАЛЕНИЕ СЕССИИ И ОЧИСТКА ЭКРАНА)
+  function performLeaveLobby() {
+    if (!currentLobbyCode) return;
 
-  // СЕТЕВЫЕ СОБЫТИЯ ОБЛАЧНОГО ШЛЮЗА (TACTICAL NETWORK)
+    if (!confirm(`Вы действительно хотите покинуть игру #${currentLobbyCode}?`)) {
+      return;
+    }
+
+    if (window.TacticalAudio) TacticalAudio.playClick();
+
+    // 1. Уведомляем сервер об осознанном выходе
+    TacticalNetwork.leaveLobby(() => {
+      console.log('[StrikeTac] Выход из лобби подтвержден сервером.');
+    });
+
+    // 2. Останавливаем аппаратный GPS трекинг
+    TacticalGPS.stop();
+
+    // 3. Очищаем карту
+    TacticalMap.clearAllPlayers();
+    TacticalMap.clearAllTacticalMarkers();
+    TacticalMap.clearBoundary();
+
+    // 4. Сбрасываем локальное состояние
+    const leftCode = currentLobbyCode;
+    currentLobbyCode = null;
+    myPlayerId = null;
+    currentLobbyData = null;
+    myRole = 'fighter';
+
+    // 5. Возвращаем интерфейс в режим меню авторизации
+    hudLobbyCode.textContent = 'НЕТ ИГРЫ';
+    hudPlayerBadge.style.display = 'none';
+    if (hudPlayersCount) hudPlayersCount.style.display = 'none';
+    if (hudGpsAccuracy) hudGpsAccuracy.style.display = 'none';
+    if (btnLeaveLobby) btnLeaveLobby.style.display = 'none';
+    if (btnOrganizerPanel) btnOrganizerPanel.style.display = 'none';
+    if (btnAddTactical) btnAddTactical.style.display = 'none';
+
+    statusBar.style.display = 'none';
+    respawnBanner.classList.add('hidden');
+    if (modalTacticalMenu) modalTacticalMenu.classList.add('hidden');
+    if (modalOrganizer) modalOrganizer.classList.add('hidden');
+    if (reconnectBanner) reconnectBanner.classList.add('hidden');
+    modalAuth.classList.remove('hidden');
+
+    showToast(`Вы покинули лобби #${leftCode}`, '#00bfff');
+  }
+
+  if (btnLeaveLobby) {
+    btnLeaveLobby.onclick = performLeaveLobby;
+  }
+  if (menuBtnLeave) {
+    menuBtnLeave.onclick = performLeaveLobby;
+  }
+
+  // 9. СЕТЕВЫЕ СОБЫТИЯ СЕРВЕРА
 
   // Обновление карты полигона
   TacticalNetwork.on('kmz:updated', (data) => {
@@ -538,26 +695,58 @@
     if (kmzStatusText) kmzStatusText.textContent = `Загружен: ${data.fileName}`;
   });
 
-  // Новый игрок подключился
+  // Новый боец подключился
   TacticalNetwork.on('player:joined', (data) => {
+    if (!data || !data.player) return;
     if (currentLobbyData && currentLobbyData.players) {
       currentLobbyData.players[data.player.id] = data.player;
     }
     TacticalMap.updatePlayerMarker(data.player, getTeamColor(data.player.teamId));
-    showToast(`Боец ${data.player.callsign} вошел в игру`, getTeamColor(data.player.teamId));
+    const title = data.isReconnected ? `Боец ${data.player.callsign} вернулся в строй` : `Боец ${data.player.callsign} вошел в игру`;
+    showToast(title, getTeamColor(data.player.teamId));
     updateOnlinePlayersCount();
     renderOrganizerPlayersList();
   });
 
-  // Перемещение игрока
+  TacticalNetwork.on('player:reconnected', (data) => {
+    if (!data || !data.player) return;
+    if (currentLobbyData && currentLobbyData.players) {
+      currentLobbyData.players[data.player.id] = data.player;
+    }
+    TacticalMap.updatePlayerMarker(data.player, getTeamColor(data.player.teamId));
+    showToast(`Боец ${data.player.callsign} на связи ⚡`, getTeamColor(data.player.teamId));
+    updateOnlinePlayersCount();
+    renderOrganizerPlayersList();
+  });
+
+  // Перемещение бойца (с автосозданием маркера если боец еще не был в словаре)
   TacticalNetwork.on('player:moved', (data) => {
-    if (currentLobbyData && currentLobbyData.players && currentLobbyData.players[data.playerId]) {
-      const p = currentLobbyData.players[data.playerId];
+    if (!data || !data.playerId) return;
+
+    if (currentLobbyData && currentLobbyData.players) {
+      let p = currentLobbyData.players[data.playerId];
+      if (!p) {
+        // Создаем бойца на основе обогащенных данных движения
+        p = {
+          id: data.playerId,
+          callsign: data.callsign || 'Боец',
+          teamId: data.teamId || 'yellow',
+          role: data.role || 'fighter',
+          status: data.status || 'alive',
+          isOffline: false
+        };
+        currentLobbyData.players[data.playerId] = p;
+        updateOnlinePlayersCount();
+        renderOrganizerPlayersList();
+      }
+
       p.lat = data.lat;
       p.lng = data.lng;
-      p.heading = data.heading;
-      p.speed = data.speed;
-      p.accuracy = data.accuracy;
+      p.heading = data.heading || 0;
+      p.speed = data.speed || 0;
+      p.accuracy = data.accuracy || 5;
+      p.isOffline = false;
+
       TacticalMap.updatePlayerMarker(p, getTeamColor(p.teamId));
     }
   });
@@ -575,6 +764,39 @@
       showToast(`💀 ${data.callsign} поражен!`, '#ff334b');
     } else if (data.status === 'alive') {
       showToast(`🟢 ${data.callsign} вернулся в строй!`, '#00ff9d');
+    }
+  });
+
+  // Боец временно ушел в оффлайн
+  TacticalNetwork.on('player:offline', (data) => {
+    if (currentLobbyData && currentLobbyData.players && currentLobbyData.players[data.playerId]) {
+      const p = currentLobbyData.players[data.playerId];
+      p.isOffline = true;
+      TacticalMap.updatePlayerMarker(p, getTeamColor(p.teamId));
+      renderOrganizerPlayersList();
+      showToast(`⚠️ Боец ${data.callsign} потерял связь`, '#ffb700');
+    }
+  });
+
+  // Боец покинул лобби или удален по таймауту
+  TacticalNetwork.on('player:left', (data) => {
+    if (currentLobbyData && currentLobbyData.players && currentLobbyData.players[data.playerId]) {
+      delete currentLobbyData.players[data.playerId];
+      TacticalMap.removePlayerMarker(data.playerId);
+      updateOnlinePlayersCount();
+      renderOrganizerPlayersList();
+      const reason = data.reason === 'kicked' ? 'исключен организатором' : 'покинул лобби';
+      showToast(`🚪 ${data.callsign || 'Боец'} ${reason}`, '#ff334b');
+    }
+  });
+
+  // Восстановление сессии
+  TacticalNetwork.on('lobby:rejoined', (res) => {
+    if (res && res.lobby) {
+      currentLobbyData = res.lobby;
+      renderAllPlayers(res.lobby);
+      updateOnlinePlayersCount();
+      showToast('Синхронизация лобби завершена!', '#00ff9d');
     }
   });
 
@@ -600,7 +822,7 @@
     TacticalMap.addTacticalMarker(data.marker, (markerId) => {
       TacticalNetwork.removeTacticalMarker(markerId);
     });
-    TacticalAudio.playTacticalAlert();
+    if (window.TacticalAudio) TacticalAudio.playTacticalAlert();
     showToast(`📍 [${data.marker.authorCallsign}]: ${data.marker.title}`, '#f59e0b');
   });
 
@@ -610,33 +832,122 @@
   });
 
   // Кнопка подтверждения выхода из мертвяка
-  btnRespawnExit.onclick = () => {
-    RespawnManager.confirmExit();
-  };
+  if (btnRespawnExit) {
+    btnRespawnExit.onclick = () => {
+      RespawnManager.confirmExit();
+    };
+  }
 
-  // Переключение слоя спутник / схема
-  btnLayerToggle.onclick = () => {
-    TacticalAudio.playClick();
-    const mode = TacticalMap.toggleMapLayer();
-    showToast(`Режим карты: ${mode === 'satellite' ? 'Спутник' : 'Топография'}`, '#00bfff');
-  };
+  // 10. ПЕРЕКЛЮЧЕНИЕ СЛОЕВ КАРТЫ
+  if (btnLayerToggle) {
+    btnLayerToggle.onclick = () => {
+      if (window.TacticalAudio) TacticalAudio.playClick();
+      const res = TacticalMap.toggleMapLayer();
+      updateMenuLayerButtons(res.id);
+      showToast(`Режим карты: ${res.name}`, '#00bfff');
+    };
+  }
 
-  // Слежение за GPS
-  btnGpsFollow.onclick = () => {
-    TacticalAudio.playClick();
-    TacticalMap.centerOnMe();
-    btnGpsFollow.classList.add('active');
-  };
+  function updateMenuLayerButtons(activeId) {
+    if (menuLayerGoogle) menuLayerGoogle.classList.toggle('active', activeId === 'google');
+    if (menuLayerOsm) menuLayerOsm.classList.toggle('active', activeId === 'osm');
+    if (menuLayerEsri) menuLayerEsri.classList.toggle('active', activeId === 'esri');
+  }
 
-  // КНОПКА ШТАБА ОРГАНИЗАТОРА
-  btnOrganizerPanel.onclick = () => {
-    TacticalAudio.playClick();
-    renderOrganizerPlayersList();
-    modalOrganizer.classList.remove('hidden');
-  };
-  btnCloseOrganizer.onclick = () => {
-    modalOrganizer.classList.add('hidden');
-  };
+  if (menuLayerGoogle) {
+    menuLayerGoogle.onclick = () => {
+      TacticalMap.setLayer('google');
+      updateMenuLayerButtons('google');
+      showToast('Включен: Гугл Спутник (Гибрид)', '#00bfff');
+    };
+  }
+  if (menuLayerOsm) {
+    menuLayerOsm.onclick = () => {
+      TacticalMap.setLayer('osm');
+      updateMenuLayerButtons('osm');
+      showToast('Включен: Топо-схема (OSM)', '#00bfff');
+    };
+  }
+  if (menuLayerEsri) {
+    menuLayerEsri.onclick = () => {
+      TacticalMap.setLayer('esri');
+      updateMenuLayerButtons('esri');
+      showToast('Включен: Esri ArcGIS Спутник', '#00bfff');
+    };
+  }
+
+  // Слежение за своим положением
+  if (btnGpsFollow) {
+    btnGpsFollow.onclick = () => {
+      if (window.TacticalAudio) TacticalAudio.playClick();
+      TacticalMap.centerOnMe();
+      btnGpsFollow.classList.add('active');
+    };
+  }
+
+  // Центрирование на всех бойцах полигона по клику на счетчик бойцов
+  if (hudPlayersCount) {
+    hudPlayersCount.onclick = () => {
+      if (window.TacticalAudio) TacticalAudio.playClick();
+      TacticalMap.fitAllPlayers();
+      showToast('Обзор всех бойцов полигона', '#00bfff');
+    };
+  }
+
+  // 11. ТАКТИЧЕСКОЕ МЕНЮ
+  function openTacticalMenu() {
+    if (window.TacticalAudio) TacticalAudio.playClick();
+    if (menuLobbyCode) menuLobbyCode.textContent = currentLobbyCode || 'НЕТ ИГРЫ';
+    if (menuCallsign) menuCallsign.textContent = myCallsign || 'Боец';
+    if (menuTeam) menuTeam.textContent = myTeamId || 'Желтые';
+    if (menuServerUrl) menuServerUrl.textContent = TacticalNetwork.serverUrl || 'Авто';
+    updateMenuLayerButtons(TacticalMap.currentBaseLayer);
+
+    if (modalTacticalMenu) modalTacticalMenu.classList.remove('hidden');
+  }
+
+  if (btnMenu) {
+    btnMenu.onclick = openTacticalMenu;
+  }
+  if (btnCloseMenu) {
+    btnCloseMenu.onclick = () => {
+      if (modalTacticalMenu) modalTacticalMenu.classList.add('hidden');
+    };
+  }
+  if (menuBtnFitPlayers) {
+    menuBtnFitPlayers.onclick = () => {
+      TacticalMap.fitAllPlayers();
+      if (modalTacticalMenu) modalTacticalMenu.classList.add('hidden');
+      showToast('Обзор всех бойцов полигона', '#00bfff');
+    };
+  }
+  if (menuBtnReconnect) {
+    menuBtnReconnect.onclick = () => {
+      TacticalNetwork.reconnect();
+      showToast('Проверка и переподключение к серверу...', '#00bfff');
+    };
+  }
+  if (menuBtnOrganizer) {
+    menuBtnOrganizer.onclick = () => {
+      if (modalTacticalMenu) modalTacticalMenu.classList.add('hidden');
+      renderOrganizerPlayersList();
+      if (modalOrganizer) modalOrganizer.classList.remove('hidden');
+    };
+  }
+
+  // 12. ШТАБ ОРГАНИЗАТОРА
+  if (btnOrganizerPanel) {
+    btnOrganizerPanel.onclick = () => {
+      if (window.TacticalAudio) TacticalAudio.playClick();
+      renderOrganizerPlayersList();
+      if (modalOrganizer) modalOrganizer.classList.remove('hidden');
+    };
+  }
+  if (btnCloseOrganizer) {
+    btnCloseOrganizer.onclick = () => {
+      if (modalOrganizer) modalOrganizer.classList.add('hidden');
+    };
+  }
 
   function uploadKmzFile(file) {
     const reader = new FileReader();
@@ -697,7 +1008,7 @@
     return { type: 'FeatureCollection', features };
   }
 
-  // Рендер списка бойцов в панели орга
+  // Рендер списка бойцов в панели орга (с кнопками назначения капитана и кика)
   function renderOrganizerPlayersList() {
     if (!organizerPlayersList || !currentLobbyData || !currentLobbyData.players) return;
     organizerPlayersList.innerHTML = '';
@@ -705,21 +1016,26 @@
     Object.values(currentLobbyData.players).forEach(p => {
       const isCaptain = p.role === 'captain';
       const isOrg = p.role === 'organizer';
+      const isOffline = !!p.isOffline;
       const teamColor = getTeamColor(p.teamId);
 
       const row = document.createElement('div');
-      row.style.cssText = 'display: flex; align-items: center; justify-content: space-between; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 8px; border-left: 4px solid ' + teamColor;
+      row.style.cssText = `display: flex; align-items: center; justify-content: space-between; padding: 10px; background: rgba(255,255,255,${isOffline ? '0.02' : '0.05'}); border-radius: 8px; border-left: 4px solid ${teamColor}; opacity: ${isOffline ? '0.65' : '1'};`;
 
       row.innerHTML = `
         <div>
-          <b style="color: #fff; font-size: 13px;">${p.callsign}</b> 
+          <b style="color: #fff; font-size: 13px;">${escapeHtml(p.callsign || 'Боец')}</b> 
           <span style="font-size: 11px; color: ${teamColor};">(${p.teamId})</span>
-          <span style="font-size: 11px; color: var(--text-dim); margin-left: 6px;">[${isOrg ? 'Орг' : (isCaptain ? 'Капитан' : 'Боец')}]</span>
+          <span style="font-size: 11px; color: var(--text-dim); margin-left: 4px;">[${isOrg ? 'Орг' : (isCaptain ? 'Капитан' : 'Боец')}]</span>
+          ${isOffline ? '<span style="font-size: 10px; color: var(--color-red); margin-left: 4px; font-weight: 700;">[ОФФЛАЙН]</span>' : ''}
         </div>
-        <div>
+        <div style="display: flex; gap: 6px; align-items: center;">
           ${!isOrg ? `
-            <button class="btn-secondary" style="padding: 6px 10px; font-size: 11px; border-radius: 6px;" id="btn_capt_${p.id}">
-              ${isCaptain ? 'Снять капитана' : 'Сделать капитаном'}
+            <button class="btn-secondary" style="padding: 5px 8px; font-size: 11px; border-radius: 6px;" id="btn_capt_${p.id}">
+              ${isCaptain ? 'Снять' : 'Капитан'}
+            </button>
+            <button class="btn-secondary" style="padding: 5px 8px; font-size: 11px; border-radius: 6px; background: rgba(255,51,75,0.2); border-color: rgba(255,51,75,0.4); color: #ff334b;" id="btn_kick_${p.id}" title="Удалить из лобби">
+              ✕
             </button>
           ` : '<span style="font-size: 11px; color: var(--color-green); font-weight: 700;">Хост</span>'}
         </div>
@@ -733,68 +1049,78 @@
           TacticalNetwork.setCaptain(p.id, p.teamId, !isCaptain);
         };
       }
+
+      const kickBtn = document.getElementById(`btn_kick_${p.id}`);
+      if (kickBtn) {
+        kickBtn.onclick = () => {
+          if (confirm(`Удалить бойца "${p.callsign}" из лобби?`)) {
+            TacticalNetwork.kickPlayer(p.id, () => {
+              showToast(`Боец ${p.callsign} удален`, '#ff334b');
+            });
+          }
+        };
+      }
     });
   }
 
-  // КНОПКА ТАКТИЧЕСКОЙ МЕТКИ (Капитан / Орг)
-  btnAddTactical.onclick = () => {
-    TacticalAudio.playClick();
-    modalTactical.classList.remove('hidden');
-  };
-  btnCloseTactical.onclick = () => {
-    modalTactical.classList.add('hidden');
-  };
-
-  btnSubmitTactical.onclick = () => {
-    const type = document.getElementById('select-marker-type').value;
-    const desc = document.getElementById('input-marker-desc').value.trim();
-    const posType = document.getElementById('select-marker-pos').value;
-
-    let targetLat, targetLng;
-    if (posType === 'gps' && TacticalGPS.currentCoords) {
-      targetLat = TacticalGPS.currentCoords.lat;
-      targetLng = TacticalGPS.currentCoords.lng;
-    } else {
-      const center = TacticalMap.map.getCenter();
-      targetLat = center.lat;
-      targetLng = center.lng;
-    }
-
-    const typeNames = {
-      enemy: 'Враг замечен',
-      attack: 'Атака сюда',
-      defend: 'Оборона рубежа',
-      rally: 'Точка сбора',
-      sos: 'Нужна помощь'
+  // 13. ТАКТИЧЕСКАЯ МЕТКА
+  if (btnAddTactical) {
+    btnAddTactical.onclick = () => {
+      if (window.TacticalAudio) TacticalAudio.playClick();
+      if (modalTactical) modalTactical.classList.remove('hidden');
     };
-
-    const marker = {
-      id: 'm_' + Math.random().toString(36).substring(2, 9),
-      type,
-      title: typeNames[type] || 'Метка',
-      description: desc,
-      authorId: myPlayerId,
-      authorCallsign: myCallsign,
-      teamId: myTeamId,
-      lat: targetLat,
-      lng: targetLng,
-      createdAt: Date.now()
+  }
+  if (btnCloseTactical) {
+    btnCloseTactical.onclick = () => {
+      if (modalTactical) modalTactical.classList.add('hidden');
     };
+  }
 
-    TacticalNetwork.addTacticalMarker(marker);
-    modalTactical.classList.add('hidden');
-    document.getElementById('input-marker-desc').value = '';
-    showToast('Метка установлена!', '#f59e0b');
-  };
+  if (btnSubmitTactical) {
+    btnSubmitTactical.onclick = () => {
+      const type = document.getElementById('select-marker-type').value;
+      const desc = document.getElementById('input-marker-desc').value.trim();
+      const posType = document.getElementById('select-marker-pos').value;
 
-  // Кнопка меню в хедере
-  document.getElementById('btn-menu').onclick = () => {
-    if (confirm('Выйти из текущей игровой сессии?')) {
-      location.reload();
-    }
-  };
+      let targetLat, targetLng;
+      if (posType === 'gps' && TacticalGPS.currentCoords) {
+        targetLat = TacticalGPS.currentCoords.lat;
+        targetLng = TacticalGPS.currentCoords.lng;
+      } else {
+        const center = TacticalMap.map.getCenter();
+        targetLat = center.lat;
+        targetLng = center.lng;
+      }
 
-  // Функция вывода тактических всплывающих сообщений (Toast)
+      const typeNames = {
+        enemy: 'Враг замечен',
+        attack: 'Атака сюда',
+        defend: 'Оборона рубежа',
+        rally: 'Точка сбора',
+        sos: 'Нужна помощь'
+      };
+
+      const marker = {
+        id: 'm_' + Math.random().toString(36).substring(2, 9),
+        type,
+        title: typeNames[type] || 'Метка',
+        description: desc,
+        authorId: myPlayerId,
+        authorCallsign: myCallsign,
+        teamId: myTeamId,
+        lat: targetLat,
+        lng: targetLng,
+        createdAt: Date.now()
+      };
+
+      TacticalNetwork.addTacticalMarker(marker);
+      if (modalTactical) modalTactical.classList.add('hidden');
+      document.getElementById('input-marker-desc').value = '';
+      showToast('Метка установлена!', '#f59e0b');
+    };
+  }
+
+  // Всплывающие сообщения (Toast)
   function showToast(text, color = '#00ff9d') {
     const container = document.getElementById('toast-container');
     if (!container) return;
@@ -814,4 +1140,5 @@
   }
 
   window.showToast = showToast;
+  window.performLeaveLobby = performLeaveLobby;
 })();

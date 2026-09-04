@@ -1,11 +1,12 @@
 /**
- * Модуль тактической карты Leaflet для StrikeTac
- * Поддержка спутника, границ KMZ, меток игроков и тактических приказов
+ * Модуль тактической карты Leaflet для StrikeTac (v3.0)
+ * Поддержка надежных спутниковых тайлов (Google Hybrid, OSM, Esri),
+ * полигонов KMZ, меток бойцов, оффлайн-индикации и тактических приказов
  */
 const TacticalMap = {
   map: null,
   layers: {},
-  currentBaseLayer: 'satellite',
+  currentBaseLayer: 'google',
   
   boundaryLayer: null,
   playersMarkers: {},
@@ -24,20 +25,37 @@ const TacticalMap = {
       attributionControl: false
     });
 
-    // Спутниковый слой (Esri World Imagery)
-    this.layers.satellite = L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 19, maxNativeZoom: 18 }
+    // 1. Гугл Спутник + Гибрид (дороги, ориентиры, 100% глобальное покрытие полигонов без надписей «Map data not yet available»)
+    this.layers.google = L.tileLayer(
+      'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+      {
+        maxZoom: 21,
+        maxNativeZoom: 20,
+        subdomains: ['mt0', 'mt1', 'mt2', 'mt3']
+      }
     );
 
-    // Топографический / Схематичный слой (OpenStreetMap)
+    // 2. Топографический / Схематичный слой (OpenStreetMap)
     this.layers.osm = L.tileLayer(
-      'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-      { maxZoom: 19 }
+      'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      {
+        maxZoom: 19
+      }
     );
 
-    // По умолчанию включаем спутник (стандарт для страйкбола на полигоне)
-    this.layers.satellite.addTo(this.map);
+    // 3. Спутниковый слой Esri World Imagery (ArcGIS) с ограничением maxNativeZoom: 17,
+    // чтобы при приближении тайлы плавно масштабировались и не выдавали серые водяные знаки ошибки
+    this.layers.esri = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      {
+        maxZoom: 20,
+        maxNativeZoom: 17
+      }
+    );
+
+    // По умолчанию включаем Google Hybrid (лучшее качество спутниковых снимков для страйкбола)
+    this.currentBaseLayer = 'google';
+    this.layers.google.addTo(this.map);
 
     // Событие смещения карты пользователем (отключает автоследование)
     this.map.on('dragstart', () => {
@@ -53,21 +71,52 @@ const TacticalMap = {
       }
     });
 
-    console.log('[Карта] Leaflet инициализирован успешно.');
+    console.log('[Карта] Leaflet тактическая карта успешно запущена со спутником Google Hybrid.');
   },
 
-  // Переключение режима Спутник / Карта
+  // Циклическое переключение слоев карты (Гугл Спутник -> Топо-схема -> Esri ArcGIS)
   toggleMapLayer() {
-    if (this.currentBaseLayer === 'satellite') {
-      this.map.removeLayer(this.layers.satellite);
-      this.layers.osm.addTo(this.map);
-      this.currentBaseLayer = 'osm';
+    let nextLayer = 'osm';
+    let label = 'Топо-схема (OSM)';
+
+    if (this.currentBaseLayer === 'google') {
+      nextLayer = 'osm';
+      label = 'Топо-схема (OSM)';
+    } else if (this.currentBaseLayer === 'osm') {
+      nextLayer = 'esri';
+      label = 'Esri ArcGIS Спутник';
     } else {
-      this.map.removeLayer(this.layers.osm);
-      this.layers.satellite.addTo(this.map);
-      this.currentBaseLayer = 'satellite';
+      nextLayer = 'google';
+      label = 'Гугл Спутник (Гибрид)';
     }
-    return this.currentBaseLayer;
+
+    return this.setLayer(nextLayer, label);
+  },
+
+  setLayer(layerKey, labelName) {
+    if (!this.layers[layerKey]) return this.currentBaseLayer;
+
+    // Удаляем все базовые слои
+    Object.keys(this.layers).forEach(k => {
+      if (this.map.hasLayer(this.layers[k])) {
+        this.map.removeLayer(this.layers[k]);
+      }
+    });
+
+    // Добавляем выбранный
+    this.layers[layerKey].addTo(this.map);
+    this.currentBaseLayer = layerKey;
+
+    const names = {
+      google: 'Гугл Спутник (Гибрид)',
+      osm: 'Топо-схема (OSM)',
+      esri: 'Esri ArcGIS Спутник'
+    };
+
+    return {
+      id: layerKey,
+      name: labelName || names[layerKey] || layerKey
+    };
   },
 
   // Отрисовка границ полигона из KMZ (GeoJSON)
@@ -100,7 +149,7 @@ const TacticalMap = {
       }
     }).addTo(this.map);
 
-    // Если есть границы, плавно центрируем карту на полигоне
+    // Центрируем карту на полигоне
     if (geojson.bounds) {
       this.map.fitBounds(geojson.bounds, { padding: [30, 30] });
     } else if (this.boundaryLayer.getBounds().isValid()) {
@@ -118,15 +167,20 @@ const TacticalMap = {
 
   // Создание или обновление метки бойца
   updatePlayerMarker(player, teamColor = '#f59e0b') {
+    if (!player || !player.id) return;
     const playerId = player.id;
-    const lat = player.lat;
-    const lng = player.lng;
+    const lat = Number(player.lat) || 55.751244;
+    const lng = Number(player.lng) || 37.618423;
     const heading = player.heading || 0;
     const isMe = playerId === this.myPlayerId;
+    const isOffline = !!player.isOffline;
 
     let statusClass = '';
     let statusIcon = '';
-    if (player.status === 'hit') {
+    if (isOffline) {
+      statusClass = 'offline';
+      statusIcon = '📡';
+    } else if (player.status === 'hit') {
       statusClass = 'hit';
       statusIcon = '💀';
     } else if (player.status === 'respawn') {
@@ -139,10 +193,12 @@ const TacticalMap = {
       statusIcon = player.role === 'captain' ? '⭐' : (player.role === 'organizer' ? '👑' : '▲');
     }
 
+    const offlineBadge = isOffline ? ' <span style="color: #ff334b; font-size: 9px;">[ОФФЛАЙН]</span>' : '';
+
     const html = `
-      <div class="player-map-icon" style="--team-color: ${teamColor}">
+      <div class="player-map-icon ${isOffline ? 'player-is-offline' : ''}" style="--team-color: ${teamColor}">
         <div class="player-callsign-label" style="--team-color: ${teamColor}">
-          ${isMe ? '👤 ' : ''}${escapeHtml(player.callsign || 'Боец')}
+          ${isMe ? '👤 ' : ''}${escapeHtml(player.callsign || 'Боец')}${offlineBadge}
         </div>
         <div class="player-heading-pointer" style="transform: rotate(${heading}deg);"></div>
         <div class="player-pin-circle ${statusClass}">
@@ -162,11 +218,14 @@ const TacticalMap = {
       this.playersMarkers[playerId].setLatLng([lat, lng]);
       this.playersMarkers[playerId].setIcon(customIcon);
     } else {
-      const marker = L.marker([lat, lng], { icon: customIcon, zIndexOffset: isMe ? 1000 : 500 }).addTo(this.map);
+      const marker = L.marker([lat, lng], {
+        icon: customIcon,
+        zIndexOffset: isMe ? 1000 : 500
+      }).addTo(this.map);
       this.playersMarkers[playerId] = marker;
     }
 
-    // Отрисовка круга реальной погрешности спутников вокруг своего бойца
+    // Отрисовка круга погрешности спутников вокруг своего бойца
     if (isMe && player.accuracy) {
       if (!this.accuracyCircle) {
         this.accuracyCircle = L.circle([lat, lng], {
@@ -195,6 +254,47 @@ const TacticalMap = {
       this.map.removeLayer(this.playersMarkers[playerId]);
       delete this.playersMarkers[playerId];
     }
+  },
+
+  // Очистить все метки бойцов
+  clearAllPlayers() {
+    Object.keys(this.playersMarkers).forEach(pid => {
+      this.map.removeLayer(this.playersMarkers[pid]);
+    });
+    this.playersMarkers = {};
+    if (this.accuracyCircle) {
+      this.map.removeLayer(this.accuracyCircle);
+      this.accuracyCircle = null;
+    }
+  },
+
+  // Центрирование на всех бойцах полигона (чтобы никто не терялся за краем экрана)
+  fitAllPlayers() {
+    const latlngs = [];
+
+    // Координаты всех текущих бойцов
+    Object.values(this.playersMarkers).forEach(marker => {
+      latlngs.push(marker.getLatLng());
+    });
+
+    if (latlngs.length === 0) {
+      // Если бойцов нет, центрируем на границе полигона если есть
+      if (this.boundaryLayer && this.boundaryLayer.getBounds().isValid()) {
+        this.map.fitBounds(this.boundaryLayer.getBounds(), { padding: [30, 30], maxZoom: 17 });
+      }
+      return;
+    }
+
+    if (latlngs.length === 1) {
+      this.map.setView(latlngs[0], 17, { animate: true });
+      return;
+    }
+
+    const bounds = L.latLngBounds(latlngs);
+    this.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 17, animate: true });
+    this.isFollowingGPS = false;
+    const followBtn = document.getElementById('btn-gps-follow');
+    if (followBtn) followBtn.classList.remove('active');
   },
 
   // Добавление тактического маркера (приказы/враги)

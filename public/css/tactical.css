@@ -783,3 +783,136 @@ body, html {
   background: var(--color-red);
   box-shadow: 0 0 8px var(--color-red);
 }
+
+/* ================== БАННЕР ПЕРЕПОДКЛЮЧЕНИЯ СЕТИ ================== */
+.reconnect-banner {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 24px) + 56px);
+  left: 10px;
+  right: 10px;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(255, 51, 75, 0.95);
+  border: 1px solid #ff334b;
+  border-radius: 8px;
+  padding: 8px 12px;
+  box-shadow: 0 6px 20px rgba(255, 51, 75, 0.5);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  backdrop-filter: blur(8px);
+  animation: banner-glow 1.5s infinite alternate;
+}
+
+@keyframes banner-glow {
+  0% { box-shadow: 0 0 8px rgba(255, 51, 75, 0.4); }
+  100% { box-shadow: 0 0 20px rgba(255, 51, 75, 0.8); }
+}
+
+.reconnect-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reconnect-spinner {
+  display: inline-block;
+  animation: spin-rotate 1.5s linear infinite;
+  font-size: 15px;
+}
+
+@keyframes spin-rotate {
+  100% { transform: rotate(360deg); }
+}
+
+.reconnect-btn {
+  background: #fff;
+  color: #990f20;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-weight: 800;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  transition: transform 0.1s;
+}
+
+.reconnect-btn:active {
+  transform: scale(0.95);
+}
+
+/* ================== СТИЛИ КНОПКИ ВЫХОДА И МЕНЮ ================== */
+.hud-btn-leave {
+  background: rgba(255, 51, 75, 0.15) !important;
+  border-color: rgba(255, 51, 75, 0.4) !important;
+  color: #ff334b !important;
+  font-weight: 700;
+}
+
+.hud-btn-leave:hover, .hud-btn-leave:active {
+  background: rgba(255, 51, 75, 0.3) !important;
+  border-color: #ff334b !important;
+}
+
+.clickable-badge {
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.clickable-badge:active {
+  transform: scale(0.92);
+  background: rgba(0, 255, 157, 0.2) !important;
+}
+
+/* Оффлайн боец на карте */
+.player-map-icon.player-is-offline .player-pin-circle {
+  opacity: 0.55;
+  filter: grayscale(80%);
+  border-style: dashed;
+}
+
+.player-map-icon.player-is-offline .player-callsign-label {
+  opacity: 0.7;
+  border-color: #6b7280 !important;
+}
+
+/* ================== АДАПТИВНОСТЬ ДЛЯ МОБИЛЬНЫХ ЭКРАНОВ ================== */
+@media (max-width: 480px) {
+  .hud-header {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .hud-logo {
+    font-size: 14px;
+    letter-spacing: 0.5px;
+  }
+  .hud-btn {
+    padding: 5px 7px;
+    font-size: 11px;
+    gap: 2px;
+  }
+}
+
+@media (max-width: 390px) {
+  .hud-header {
+    gap: 4px;
+  }
+  .btn-label-text {
+    display: none;
+  }
+  .hud-logo span {
+    display: inline;
+  }
+  .hud-lobby-badge {
+    font-size: 10px;
+    padding: 2px 5px;
+  }
+  .player-badge {
+    font-size: 11px;
+    padding: 3px 6px;
+  }
+}

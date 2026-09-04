@@ -1,6 +1,6 @@
 {
   "name": "striketac",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "StrikeTac Tactical Airsoft Server",
   "main": "server.js",
   "engines": {

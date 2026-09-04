@@ -1,26 +1,25 @@
 /**
- * Тактический сетевой менеджер StrikeTac (v2.0)
- * Поддерживает два режима работы:
- * 1. Выделенный сервер StrikeTac (Socket.IO) - мгновенный отклик, централизованный реестр лобби,
- *    работает по локальной сети Wi-Fi (192.168.x.x), Radmin VPN, localhost или облачному серверу.
- * 2. Автономный Cloud Relay (MQTT WSS) - для игр в лесу без ПК через защищенные WSS-шлюзы
- *    с гарантированным inbox-рукопожатием и повторными попытками.
+ * Тактический сетевой менеджер StrikeTac (v3.0)
+ * Единый выделенный сетевой стек на Socket.IO.
+ * Полное удаление сторонних брокеров для максимальной надежности и устранения разделения сети.
+ * Включает автоматическое переподключение, восстановление сессии при обрыве связи и защиту от задвоения.
  */
 const TacticalNetwork = {
-  transport: null, // 'socket' | 'mqtt'
+  transport: 'socket',
   socket: null,
-  client: null,
 
   lobbyCode: null,
   playerId: null,
   isHost: false,
   isConnected: false,
+  isReconnecting: false,
   serverUrl: '',
 
   eventCallbacks: {},
   localLobbyData: null,
 
   currentCallsign: '',
+  currentPassword: '',
   currentTeamId: 'yellow',
   currentStatus: 'alive',
   currentLat: 55.751244,
@@ -29,95 +28,171 @@ const TacticalNetwork = {
   currentSpeed: 0,
   currentAccuracy: 5,
 
-  presenceInterval: null,
-  activeBrokerUrl: 'wss://broker.emqx.io:8084/mqtt',
-  CLOUD_BROKERS: [
-    'wss://broker.emqx.io:8084/mqtt',
-    'wss://broker.hivemq.com:8884/mqtt'
-  ],
-
   /**
-   * Инициализация подключения
+   * Инициализация постоянного подключения к серверу StrikeTac
    */
   connect(onSuccess, onError) {
+    if (this.socket && (this.socket.connected || this.isConnected)) {
+      if (onSuccess) onSuccess(this.serverUrl, 'socket');
+      return;
+    }
+
     // 1. Определение адреса сервера
-    let configuredUrl = '';
+    let targetUrl = '';
     if (typeof AppStorage !== 'undefined' && AppStorage.getServerUrl) {
-      configuredUrl = AppStorage.getServerUrl().trim();
+      targetUrl = AppStorage.getServerUrl().trim();
+    }
+    if (!targetUrl && typeof window !== 'undefined' && window.location && window.location.origin) {
+      targetUrl = window.location.origin;
     }
 
-    if (!configuredUrl && typeof window !== 'undefined' && window.location && window.location.origin) {
-      const origin = window.location.origin;
-      if (origin.startsWith('http') && !origin.includes('capacitor:') && !origin.includes('localhost')) {
-        configuredUrl = origin;
+    this.serverUrl = targetUrl;
+    console.log('[TacticalNetwork] Подключение к тактическому серверу:', targetUrl);
+
+    if (typeof io === 'undefined') {
+      const err = 'Библиотека Socket.IO не загружена!';
+      console.error('[TacticalNetwork]', err);
+      if (onError) onError(err);
+      return;
+    }
+
+    try {
+      // Закрываем предыдущий сокет если был
+      if (this.socket) {
+        try { this.socket.disconnect(); } catch (e) {}
       }
-    }
 
-    if (!configuredUrl) {
-      configuredUrl = 'https://striketac-mavik186.amvera.io';
-    }
+      this.socket = io(targetUrl, {
+        transports: ['websocket', 'polling'],
+        timeout: 8000,
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 4000,
+        randomizationFactor: 0.3
+      });
 
-    // Если доступен Socket.IO (библиотека подключена), пробуем подключиться к серверу
-    if (typeof io !== 'undefined') {
-      const targetUrl = configuredUrl || undefined;
-      console.log('[TacticalNetwork] Попытка подключения к серверу StrikeTac:', targetUrl || 'авто (текущий хост)');
+      let initialResolved = false;
 
-      let hasResolved = false;
-      try {
-        const s = io(targetUrl, {
-          transports: ['websocket', 'polling'],
-          timeout: 4000,
-          reconnection: true,
-          reconnectionAttempts: 10,
-          reconnectionDelay: 1500
-        });
+      // Успешное подключение
+      this.socket.on('connect', () => {
+        this.isConnected = true;
+        this.isReconnecting = false;
+        console.log('[TacticalNetwork] ✅ Соединение с сервером установлено! Socket ID:', this.socket.id);
 
-        const connectTimer = setTimeout(() => {
-          if (!s.connected && !hasResolved) {
-            console.log('[TacticalNetwork] Сервер не ответил вовремя. Переключаемся на Cloud Relay...');
-            this.initMqttRelay(onSuccess, onError);
-          }
-        }, 3500);
+        this.trigger('connection:status', true);
+        this.trigger('connection:restored');
 
-        s.on('connect', () => {
-          clearTimeout(connectTimer);
-          if (hasResolved && this.transport === 'socket') return;
-          hasResolved = true;
+        // Если боец был в лобби и восстановил связь — автоматически перезаходим в комнату
+        if (this.lobbyCode && this.currentCallsign) {
+          console.log('[TacticalNetwork] 🔄 Восстановление сессии в лобби #' + this.lobbyCode + '...');
+          this.rejoinActiveLobby();
+        }
 
-          this.transport = 'socket';
-          this.socket = s;
-          this.isConnected = true;
-          this.serverUrl = configuredUrl || (window.location && window.location.origin) || 'http://localhost:3000';
-          console.log('[TacticalNetwork] ✅ Успешно подключено к тактическому серверу:', this.serverUrl);
-
-          this.bindSocketEvents();
+        if (!initialResolved) {
+          initialResolved = true;
           if (onSuccess) onSuccess(this.serverUrl, 'socket');
-          this.trigger('connection:status', true);
-        });
+        }
+      });
 
-        s.on('connect_error', (err) => {
-          if (!hasResolved) {
-            clearTimeout(connectTimer);
-            hasResolved = true;
-            console.warn('[TacticalNetwork] Сервер недоступен (' + err.message + '). Запуск Cloud Relay...');
-            this.initMqttRelay(onSuccess, onError);
+      // Событие реконнекта
+      this.socket.io.on('reconnect', (attempt) => {
+        console.log(`[TacticalNetwork] 🔄 Успешное переподключение (попытка ${attempt})`);
+        this.isConnected = true;
+        this.isReconnecting = false;
+        this.trigger('connection:status', true);
+        this.trigger('connection:restored');
+      });
+
+      this.socket.io.on('reconnect_attempt', (attempt) => {
+        this.isReconnecting = true;
+        this.trigger('connection:reconnecting', attempt);
+      });
+
+      this.socket.on('connect_error', (err) => {
+        console.warn('[TacticalNetwork] Ошибка связи с сервером:', err.message);
+        this.isConnected = false;
+        this.trigger('connection:status', false);
+
+        if (!initialResolved) {
+          initialResolved = true;
+          if (onError) onError(`Не удалось подключиться к серверу (${targetUrl}): ${err.message}`);
+        }
+      });
+
+      this.socket.on('disconnect', (reason) => {
+        console.warn('[TacticalNetwork] ⚠️ Потеря связи с сервером:', reason);
+        this.isConnected = false;
+        this.trigger('connection:status', false);
+        this.trigger('connection:lost', reason);
+
+        // Если сервер принудительно отключил, пробуем переподключиться
+        if (reason === 'io server disconnect') {
+          this.socket.connect();
+        }
+      });
+
+      this.bindSocketEvents();
+
+      // Мониторинг нативного статуса сети смартфона
+      if (typeof window !== 'undefined') {
+        window.addEventListener('online', () => {
+          console.log('[TacticalNetwork] 🌐 Сеть на устройстве включена, переподключение сокета...');
+          if (this.socket && !this.socket.connected) {
+            this.socket.connect();
           }
         });
-
-        s.on('disconnect', (reason) => {
-          console.warn('[TacticalNetwork] Соединение с сервером потеряно:', reason);
+        window.addEventListener('offline', () => {
+          console.warn('[TacticalNetwork] 🚫 Сеть на устройстве отключена (нет интернета).');
           this.isConnected = false;
           this.trigger('connection:status', false);
+          this.trigger('connection:lost', 'offline');
         });
-
-        return;
-      } catch (err) {
-        console.warn('[TacticalNetwork] Ошибка инициализации Socket.IO:', err);
       }
-    }
 
-    // Если Socket.IO недоступен, подключаем Cloud Relay
-    this.initMqttRelay(onSuccess, onError);
+    } catch (err) {
+      console.error('[TacticalNetwork] Ошибка создания сокета:', err);
+      if (onError) onError(err.message);
+    }
+  },
+
+  /**
+   * Принудительное переподключение
+   */
+  reconnect() {
+    if (this.socket) {
+      this.socket.connect();
+    } else {
+      this.connect();
+    }
+  },
+
+  /**
+   * Автоматический перезаход в комнату после обрыва связи
+   */
+  rejoinActiveLobby() {
+    if (!this.lobbyCode || !this.socket || !this.socket.connected) return;
+
+    const deviceId = typeof AppStorage !== 'undefined' ? AppStorage.getDeviceId() : null;
+
+    this.socket.emit('lobby:join', {
+      code: this.lobbyCode,
+      callsign: this.currentCallsign,
+      password: this.currentPassword,
+      teamId: this.currentTeamId,
+      deviceId: deviceId,
+      lat: this.currentLat,
+      lng: this.currentLng
+    }, (res) => {
+      if (res && res.success) {
+        this.playerId = res.playerId;
+        this.localLobbyData = res.lobby;
+        console.log(`[TacticalNetwork] ✅ Сессия в лобби #${this.lobbyCode} полностью восстановлена!`);
+        this.trigger('lobby:rejoined', res);
+      } else {
+        console.warn('[TacticalNetwork] Ошибка восстановления в лобби:', res ? res.error : 'нет ответа');
+      }
+    });
   },
 
   /**
@@ -130,12 +205,24 @@ const TacticalNetwork = {
       this.trigger('player:joined', data);
     });
 
+    this.socket.on('player:reconnected', (data) => {
+      this.trigger('player:reconnected', data);
+    });
+
     this.socket.on('player:moved', (data) => {
       this.trigger('player:moved', data);
     });
 
     this.socket.on('player:status_changed', (data) => {
       this.trigger('player:status_changed', data);
+    });
+
+    this.socket.on('player:offline', (data) => {
+      this.trigger('player:offline', data);
+    });
+
+    this.socket.on('player:left', (data) => {
+      this.trigger('player:left', data);
     });
 
     this.socket.on('tactical:marker_added', (data) => {
@@ -161,148 +248,47 @@ const TacticalNetwork = {
     this.socket.on('player:team_changed', (data) => {
       this.trigger('player:team_changed', data);
     });
-
-    this.socket.on('player:disconnected', (data) => {
-      this.trigger('player:disconnected', data);
-    });
   },
 
   /**
-   * Инициализация автономного облачного шлюза (MQTT Relay)
-   */
-  initMqttRelay(onSuccess, onError) {
-    if (typeof mqtt === 'undefined') {
-      console.error('[TacticalNetwork] MQTT библиотека не найдена!');
-      if (onError) onError('Сетевые библиотеки не загружены');
-      return;
-    }
-
-    this.transport = 'mqtt';
-    const brokerUrl = this.activeBrokerUrl;
-    const clientId = 'striketac_' + Math.random().toString(36).substring(2, 10);
-    console.log('[Cloud Relay] Подключение к WSS-шлюзу:', brokerUrl);
-
-    try {
-      this.client = mqtt.connect(brokerUrl, {
-        clientId: clientId,
-        clean: true,
-        connectTimeout: 5000,
-        reconnectPeriod: 3000,
-        keepalive: 30
-      });
-    } catch (err) {
-      console.error('[Cloud Relay] Ошибка запуска MQTT:', err);
-      if (onError) onError(err.message);
-      return;
-    }
-
-    this.client.on('connect', () => {
-      this.isConnected = true;
-      console.log('[Cloud Relay] ✅ Шлюз активен:', brokerUrl);
-      if (onSuccess) onSuccess(brokerUrl, 'mqtt');
-      this.trigger('connection:status', true);
-    });
-
-    this.client.on('error', (err) => {
-      console.warn('[Cloud Relay] Ошибка сети:', err);
-      this.isConnected = false;
-      this.trigger('connection:status', false);
-    });
-
-    this.client.on('message', (topic, message) => {
-      try {
-        const data = JSON.parse(message.toString());
-        if (data._senderId && data._senderId === this.playerId) return;
-        this.handleMqttIncoming(data);
-      } catch (e) {
-        console.error('[Cloud Relay] Ошибка парсинга пакета:', e);
-      }
-    });
-  },
-
-  /**
-   * Создание лобби
+   * Создание лобби организатором
    */
   createLobby(data, onSuccess, onError) {
-    if (!this.isConnected) {
-      if (onError) onError('Нет связи с сетью! Дождитесь подключения.');
+    if (!this.isConnected || !this.socket) {
+      if (onError) onError('Нет связи с сервером! Дождитесь подключения.');
       return;
     }
 
-    // Режим 1: Выделенный сервер StrikeTac
-    if (this.transport === 'socket' && this.socket) {
-      this.socket.emit('lobby:create', data, (res) => {
-        if (res.error) {
-          if (onError) onError(res.error);
-        } else {
-          this.lobbyCode = res.lobbyCode;
-          this.playerId = res.playerId;
-          this.isHost = true;
-          this.localLobbyData = res.lobby;
-          if (onSuccess) onSuccess(res);
-        }
-      });
-      return;
-    }
+    const deviceId = typeof AppStorage !== 'undefined' ? AppStorage.getDeviceId() : null;
 
-    // Режим 2: Cloud Relay (MQTT)
-    this.isHost = true;
-    this.lobbyCode = (data.code || 'TAC' + Math.floor(1000 + Math.random() * 9000)).toUpperCase().trim();
-    this.playerId = 'p_' + Math.random().toString(36).substring(2, 9);
-    this.currentCallsign = data.callsign || 'Организатор';
-    this.currentTeamId = data.teamId || 'yellow';
-    this.currentStatus = 'alive';
-    if (data.lat) this.currentLat = data.lat;
-    if (data.lng) this.currentLng = data.lng;
-
-    const initialLobby = {
-      code: this.lobbyCode,
-      name: data.name || `Игра #${this.lobbyCode}`,
+    const payload = {
+      name: data.name,
+      code: (data.code || '').toUpperCase().trim(),
       password: (data.password || '').trim(),
-      organizerPlayerId: this.playerId,
+      callsign: (data.callsign || '').trim(),
       respawnMode: data.respawnMode || 'helicopter',
       respawnTimeMinutes: data.respawnTimeMinutes || 15,
       helicopterIntervalMinutes: data.helicopterIntervalMinutes || 15,
-      boundary: null,
-      boundaryFileName: null,
-      tacticalMarkers: [],
-      teams: [
-        { id: 'yellow', name: 'Желтые', color: '#f59e0b' },
-        { id: 'blue', name: 'Синие', color: '#06b6d4' },
-        { id: 'green', name: 'Зеленые', color: '#10b981' },
-        { id: 'red', name: 'Красные', color: '#ef4444' }
-      ],
-      players: {
-        [this.playerId]: {
-          id: this.playerId,
-          callsign: data.callsign,
-          teamId: this.currentTeamId,
-          role: 'organizer',
-          status: 'alive',
-          lat: this.currentLat,
-          lng: this.currentLng,
-          heading: 0,
-          speed: 0,
-          accuracy: 5
-        }
-      }
+      teamId: data.teamId || 'yellow',
+      deviceId: deviceId,
+      lat: data.lat || 55.751244,
+      lng: data.lng || 37.618423
     };
 
-    this.localLobbyData = initialLobby;
-
-    // Хост подписывается на топик комнаты
-    const roomTopic = `striketac/v2/room/${this.lobbyCode}`;
-    this.client.subscribe(roomTopic, { qos: 0 }, (err) => {
-      if (err) console.error('[Cloud Relay] Ошибка подписки на комнату:', err);
-      console.log('[Cloud Relay] Организатор открыл комнату:', roomTopic);
-
-      this.startMqttPresenceLoop();
-      if (onSuccess) {
-        onSuccess({
-          lobbyCode: this.lobbyCode,
-          playerId: this.playerId,
-          lobby: initialLobby
-        });
+    this.socket.emit('lobby:create', payload, (res) => {
+      if (res && res.error) {
+        if (onError) onError(res.error);
+      } else if (res && res.success) {
+        this.lobbyCode = res.lobbyCode;
+        this.playerId = res.playerId;
+        this.isHost = true;
+        this.currentCallsign = payload.callsign;
+        this.currentPassword = payload.password;
+        this.currentTeamId = payload.teamId;
+        this.localLobbyData = res.lobby;
+        if (onSuccess) onSuccess(res);
+      } else {
+        if (onError) onError('Сервер не вернул подтверждение создания лобби');
       }
     });
   },
@@ -311,383 +297,201 @@ const TacticalNetwork = {
    * Вход в существующее лобби
    */
   joinLobby(data, onSuccess, onError) {
-    if (!this.isConnected) {
-      if (onError) onError('Нет связи с сетью! Дождитесь подключения.');
+    if (!this.isConnected || !this.socket) {
+      if (onError) onError('Нет связи с тактическим сервером! Дождитесь подключения.');
       return;
     }
 
     const targetCode = (data.code || '').toUpperCase().trim();
+    const deviceId = typeof AppStorage !== 'undefined' ? AppStorage.getDeviceId() : null;
 
-    // Режим 1: Выделенный сервер StrikeTac
-    if (this.transport === 'socket' && this.socket) {
-      this.socket.emit('lobby:join', {
-        code: targetCode,
-        callsign: data.callsign,
-        teamId: data.teamId,
-        password: data.password,
-        lat: data.lat || 55.751244,
-        lng: data.lng || 37.618423
-      }, (res) => {
-        if (res.error) {
-          if (onError) onError(res.error);
-        } else {
-          this.lobbyCode = targetCode;
-          this.playerId = res.playerId;
-          this.isHost = false;
-          this.localLobbyData = res.lobby;
-          if (onSuccess) onSuccess({ lobbyCode: targetCode, playerId: res.playerId, lobby: res.lobby });
+    const payload = {
+      code: targetCode,
+      callsign: (data.callsign || '').trim(),
+      password: (data.password || '').trim(),
+      teamId: data.teamId || 'yellow',
+      deviceId: deviceId,
+      lat: data.lat || 55.751244,
+      lng: data.lng || 37.618423
+    };
+
+    this.socket.emit('lobby:join', payload, (res) => {
+      if (res && res.error) {
+        if (onError) onError(res.error);
+      } else if (res && res.success) {
+        this.lobbyCode = targetCode;
+        this.playerId = res.playerId;
+        this.isHost = res.lobby && res.lobby.players && res.lobby.players[res.playerId] && res.lobby.players[res.playerId].role === 'organizer';
+        this.currentCallsign = payload.callsign;
+        this.currentPassword = payload.password;
+        this.currentTeamId = payload.teamId;
+        this.localLobbyData = res.lobby;
+        if (onSuccess) onSuccess({ lobbyCode: targetCode, playerId: res.playerId, lobby: res.lobby, isReconnected: res.isReconnected });
+      } else {
+        if (onError) onError('Неизвестный ответ сервера');
+      }
+    });
+  },
+
+  /**
+   * Выход из текущего лобби (кнопка выхода)
+   */
+  leaveLobby(callback) {
+    if (this.socket && this.isConnected && this.lobbyCode) {
+      this.socket.emit('lobby:leave', () => {
+        this.lobbyCode = null;
+        this.playerId = null;
+        this.localLobbyData = null;
+        this.isHost = false;
+        if (typeof AppStorage !== 'undefined') {
+          AppStorage.clearCurrentLobby();
         }
+        if (callback) callback();
       });
       return;
     }
 
-    // Режим 2: Cloud Relay (MQTT) с надежным handshake через inbox
+    this.lobbyCode = null;
+    this.playerId = null;
+    this.localLobbyData = null;
     this.isHost = false;
-    this.lobbyCode = targetCode;
-    this.playerId = 'p_' + Math.random().toString(36).substring(2, 9);
-    this.currentCallsign = data.callsign;
-    this.currentTeamId = data.teamId || 'yellow';
-    this.currentStatus = 'alive';
-    if (data.lat) this.currentLat = data.lat;
-    if (data.lng) this.currentLng = data.lng;
-
-    const myPlayer = {
-      id: this.playerId,
-      callsign: this.currentCallsign,
-      teamId: this.currentTeamId,
-      role: 'fighter',
-      status: 'alive',
-      lat: this.currentLat,
-      lng: this.currentLng,
-      heading: 0,
-      speed: 0,
-      accuracy: 5
-    };
-
-    const roomTopic = `striketac/v2/room/${this.lobbyCode}`;
-    const inboxTopic = `striketac/v2/inbox/${this.playerId}`;
-
-    let isResolved = false;
-    let attempts = 0;
-    const maxAttempts = 3;
-    let retryTimer = null;
-
-    const cleanup = () => {
-      if (retryTimer) clearTimeout(retryTimer);
-      try { this.client.unsubscribe(inboxTopic); } catch (e) {}
-    };
-
-    // Подписываемся на персональный inbox для получения ответа от хоста
-    this.client.subscribe(inboxTopic, { qos: 0 }, (err) => {
-      if (err) {
-        if (onError) onError('Ошибка создания защищенного канала авторизации');
-        return;
-      }
-
-      const sendAttempt = () => {
-        if (isResolved) return;
-        attempts++;
-        console.log(`[Cloud Relay] Отправка join:request (попытка ${attempts}/${maxAttempts})...`);
-
-        const packet = {
-          action: 'join:request',
-          _senderId: this.playerId,
-          _timestamp: Date.now(),
-          requesterPlayerId: this.playerId,
-          inboxTopic: inboxTopic,
-          password: (data.password || '').trim(),
-          player: myPlayer
-        };
-
-        this.client.publish(roomTopic, JSON.stringify(packet), { qos: 0 });
-
-        if (attempts < maxAttempts) {
-          retryTimer = setTimeout(sendAttempt, 2500);
-        } else {
-          retryTimer = setTimeout(() => {
-            if (!isResolved) {
-              isResolved = true;
-              cleanup();
-              if (onError) {
-                onError(`Лобби #${targetCode} не отвечает!\nУбедитесь, что код введен верно и организатор находится в сети.`);
-              }
-            }
-          }, 3000);
-        }
-      };
-
-      sendAttempt();
-    });
-
-    this.joinPendingCallback = (response) => {
-      if (isResolved) return;
-      isResolved = true;
-      cleanup();
-
-      if (response.success) {
-        this.localLobbyData = response.lobby;
-        // После одобрения подписываемся на общий канал комнаты
-        this.client.subscribe(roomTopic, { qos: 0 });
-        this.startMqttPresenceLoop();
-        if (onSuccess) {
-          onSuccess({
-            lobbyCode: this.lobbyCode,
-            playerId: this.playerId,
-            lobby: response.lobby
-          });
-        }
-      } else {
-        if (onError) onError(response.reason || 'Отказано в доступе организатором.');
-      }
-    };
+    if (typeof AppStorage !== 'undefined') {
+      AppStorage.clearCurrentLobby();
+    }
+    if (callback) callback();
   },
 
   /**
-   * Обработка входящих сообщений в режиме Cloud Relay (MQTT)
+   * Исключение / кик игрока организатором
    */
-  handleMqttIncoming(data) {
-    if (!data || !data.action) return;
-    const action = data.action;
-
-    // 1. Хост обрабатывает запрос на вход
-    if (action === 'join:request') {
-      if (this.isHost && this.localLobbyData) {
-        console.log('[Cloud Relay] Хост получил запрос от', data.requesterPlayerId);
-        const expectedPassword = (this.localLobbyData.password || '').trim();
-        const incomingPassword = (data.password || '').trim();
-
-        const responseTopic = data.inboxTopic || `striketac/v2/inbox/${data.requesterPlayerId}`;
-
-        if (expectedPassword && incomingPassword !== expectedPassword) {
-          console.warn('[Cloud Relay] Неверный пароль от', data.requesterPlayerId);
-          this.client.publish(responseTopic, JSON.stringify({
-            action: 'join:response',
-            targetPlayerId: data.requesterPlayerId,
-            success: false,
-            reason: 'Неверный пароль лобби! Доступ запрещен.'
-          }), { qos: 0 });
-          return;
-        }
-
-        // Пароль верный — регистрируем бойца
-        if (data.player && data.player.id) {
-          this.localLobbyData.players[data.player.id] = data.player;
-          this.trigger('player:joined', { player: data.player });
-        }
-
-        console.log('[Cloud Relay] Одобрен вход бойцу', data.requesterPlayerId);
-        this.client.publish(responseTopic, JSON.stringify({
-          action: 'join:response',
-          targetPlayerId: data.requesterPlayerId,
-          success: true,
-          lobby: this.localLobbyData
-        }), { qos: 0 });
-
-        // Оповещаем остальных
-        const roomTopic = `striketac/v2/room/${this.lobbyCode}`;
-        this.client.publish(roomTopic, JSON.stringify({
-          action: 'player:joined',
-          _senderId: this.playerId,
-          player: data.player
-        }), { qos: 0 });
-      }
-      return;
-    }
-
-    // 2. Клиент обрабатывает ответ на вход
-    if (action === 'join:response') {
-      if (data.targetPlayerId === this.playerId && this.joinPendingCallback) {
-        this.joinPendingCallback(data);
-        this.joinPendingCallback = null;
-      }
-      return;
-    }
-
-    // 3. Другие игровые события
-    if (action === 'player:moved') {
-      this.trigger('player:moved', data);
-    } else if (action === 'player:status_changed') {
-      this.trigger('player:status_changed', data);
-    } else if (action === 'player:joined') {
-      this.trigger('player:joined', data);
-    } else if (action === 'tactical:marker_added') {
-      this.trigger('tactical:marker_added', data);
-    } else if (action === 'tactical:marker_removed') {
-      this.trigger('tactical:marker_removed', data);
-    } else if (action === 'team:captain_updated') {
-      this.trigger('team:captain_updated', data);
-    } else if (action === 'kmz:updated') {
-      this.trigger('kmz:updated', data);
+  kickPlayer(targetPlayerId, callback) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('lobby:kick_player', { targetPlayerId }, (res) => {
+        if (callback) callback(res);
+      });
     }
   },
 
   /**
-   * Фоновая телеметрия в MQTT
+   * Отправка GPS координат бойца
+   * Поддерживает оба названия метода: sendGPS и updateGPS
    */
-  startMqttPresenceLoop() {
-    if (this.presenceInterval) clearInterval(this.presenceInterval);
-    this.presenceInterval = setInterval(() => {
-      if (!this.isConnected || !this.lobbyCode) return;
-      const roomTopic = `striketac/v2/room/${this.lobbyCode}`;
-      const packet = {
-        action: 'player:moved',
-        _senderId: this.playerId,
-        playerId: this.playerId,
-        lat: this.currentLat,
-        lng: this.currentLng,
-        heading: this.currentHeading,
-        speed: this.currentSpeed,
-        accuracy: this.currentAccuracy
-      };
-      if (this.client) {
-        this.client.publish(roomTopic, JSON.stringify(packet), { qos: 0 });
-      }
-    }, 3000);
+  sendGPS(coords) {
+    this.updateGPS(coords);
   },
 
-  /**
-   * Обновление GPS координат
-   */
   updateGPS(coords) {
+    if (!coords) return;
     this.currentLat = coords.lat;
     this.currentLng = coords.lng;
     this.currentHeading = coords.heading || 0;
     this.currentSpeed = coords.speed || 0;
     this.currentAccuracy = coords.accuracy || 5;
 
-    if (this.transport === 'socket' && this.socket && this.isConnected) {
+    if (this.socket && this.isConnected && this.lobbyCode) {
       this.socket.emit('gps:update', coords);
-      return;
-    }
-
-    if (this.transport === 'mqtt' && this.client && this.isConnected && this.lobbyCode) {
-      const roomTopic = `striketac/v2/room/${this.lobbyCode}`;
-      this.client.publish(roomTopic, JSON.stringify({
-        action: 'player:moved',
-        _senderId: this.playerId,
-        playerId: this.playerId,
-        lat: coords.lat,
-        lng: coords.lng,
-        heading: coords.heading,
-        speed: coords.speed,
-        accuracy: coords.accuracy
-      }), { qos: 0 });
     }
   },
 
   /**
-   * Смена статуса игрока
+   * Смена статуса игрока (alive, hit, respawn, malfunction)
    */
-  sendStatus(status) {
+  sendStatus(status, callback) {
     this.currentStatus = status;
 
-    if (this.transport === 'socket' && this.socket && this.isConnected) {
-      this.socket.emit('status:update', { status: status });
-      return;
-    }
-
-    if (this.transport === 'mqtt' && this.client && this.isConnected && this.lobbyCode) {
-      const roomTopic = `striketac/v2/room/${this.lobbyCode}`;
-      this.client.publish(roomTopic, JSON.stringify({
-        action: 'player:status_changed',
-        _senderId: this.playerId,
-        playerId: this.playerId,
-        callsign: this.currentCallsign,
-        teamId: this.currentTeamId,
-        status: status,
-        respawnStartTime: status === 'respawn' ? Date.now() : null
-      }), { qos: 0 });
+    if (this.socket && this.isConnected && this.lobbyCode) {
+      this.socket.emit('status:update', { status: status }, (res) => {
+        if (callback) callback(res);
+      });
     }
   },
 
   /**
    * Подтверждение выхода из мертвяка
    */
-  sendRespawnExit() {
-    if (this.transport === 'socket' && this.socket && this.isConnected) {
-      this.socket.emit('respawn:confirm_exit', {});
+  sendRespawnExit(callback) {
+    if (this.socket && this.isConnected && this.lobbyCode) {
+      this.socket.emit('respawn:confirm_exit', {}, (res) => {
+        if (callback) callback(res);
+      });
       return;
     }
-    this.sendStatus('alive');
+    this.sendStatus('alive', callback);
   },
 
   /**
-   * Назначение капитана
+   * Назначение капитана команды организатором
    */
-  setCaptain(targetPlayerId, teamId, isCaptain) {
-    if (this.transport === 'socket' && this.socket && this.isConnected) {
-      this.socket.emit('team:set_captain', { targetPlayerId, teamId, isCaptain });
-      return;
+  setCaptain(targetPlayerId, teamId, isCaptain, callback) {
+    if (this.socket && this.isConnected && this.lobbyCode) {
+      this.socket.emit('team:set_captain', { targetPlayerId, teamId, isCaptain }, (res) => {
+        if (callback) callback(res);
+      });
     }
+  },
 
-    if (this.transport === 'mqtt' && this.client && this.isConnected && this.lobbyCode) {
-      const roomTopic = `striketac/v2/room/${this.lobbyCode}`;
-      this.client.publish(roomTopic, JSON.stringify({
-        action: 'team:captain_updated',
-        _senderId: this.playerId,
-        teamId: teamId,
-        captainId: isCaptain ? targetPlayerId : null,
-        targetPlayerId: targetPlayerId,
-        newRole: isCaptain ? 'captain' : 'fighter'
-      }), { qos: 0 });
+  /**
+   * Смена команды
+   */
+  changeTeam(newTeamId, callback) {
+    this.currentTeamId = newTeamId;
+    if (this.socket && this.isConnected && this.lobbyCode) {
+      this.socket.emit('team:change', { newTeamId }, (res) => {
+        if (callback) callback(res);
+      });
     }
   },
 
   /**
    * Добавление тактической метки
    */
-  addTacticalMarker(marker) {
-    if (this.transport === 'socket' && this.socket && this.isConnected) {
-      this.socket.emit('tactical:add_marker', marker);
-      return;
-    }
-
-    if (this.transport === 'mqtt' && this.client && this.isConnected && this.lobbyCode) {
-      const roomTopic = `striketac/v2/room/${this.lobbyCode}`;
-      this.client.publish(roomTopic, JSON.stringify({
-        action: 'tactical:marker_added',
-        _senderId: this.playerId,
-        marker: marker
-      }), { qos: 0 });
+  addTacticalMarker(marker, callback) {
+    if (this.socket && this.isConnected && this.lobbyCode) {
+      this.socket.emit('tactical:add_marker', marker, (res) => {
+        if (callback) callback(res);
+      });
     }
   },
 
   /**
    * Удаление тактической метки
    */
-  removeTacticalMarker(markerId) {
-    if (this.transport === 'socket' && this.socket && this.isConnected) {
-      this.socket.emit('tactical:remove_marker', { markerId });
-      return;
-    }
-
-    if (this.transport === 'mqtt' && this.client && this.isConnected && this.lobbyCode) {
-      const roomTopic = `striketac/v2/room/${this.lobbyCode}`;
-      this.client.publish(roomTopic, JSON.stringify({
-        action: 'tactical:marker_removed',
-        _senderId: this.playerId,
-        markerId: markerId
-      }), { qos: 0 });
+  removeTacticalMarker(markerId, callback) {
+    if (this.socket && this.isConnected && this.lobbyCode) {
+      this.socket.emit('tactical:remove_marker', { markerId }, (res) => {
+        if (callback) callback(res);
+      });
     }
   },
 
   /**
-   * Рассылка карты полигона (KMZ / GeoJSON)
+   * Рассылка карты полигона (GeoJSON)
    */
   broadcastKMZ(boundaryGeojson, fileName) {
-    if (this.transport === 'socket' && this.socket && this.isConnected) {
+    if (this.socket && this.isConnected && this.lobbyCode) {
       this.socket.emit('kmz:broadcast', { boundary: boundaryGeojson, fileName });
-      return;
     }
+  },
 
-    if (this.transport === 'mqtt' && this.client && this.isConnected && this.lobbyCode) {
-      const roomTopic = `striketac/v2/room/${this.lobbyCode}`;
-      this.client.publish(roomTopic, JSON.stringify({
-        action: 'kmz:updated',
-        _senderId: this.playerId,
-        boundary: boundaryGeojson,
-        fileName: fileName
-      }), { qos: 0 });
+  /**
+   * Загрузка сырого KMZ файла организатором
+   */
+  uploadKMZ(fileBase64, fileName, callback) {
+    if (this.socket && this.isConnected && this.lobbyCode) {
+      this.socket.emit('kmz:upload', { fileBase64, fileName }, (res) => {
+        if (callback) callback(res);
+      });
+    }
+  },
+
+  /**
+   * Синхронизация таймера вертолета
+   */
+  syncHelicopter(callback) {
+    if (this.socket && this.isConnected && this.lobbyCode) {
+      this.socket.emit('helicopter:sync', (res) => {
+        if (callback) callback(res);
+      });
     }
   },
 
@@ -709,7 +513,7 @@ const TacticalNetwork = {
   trigger(event, data) {
     if (this.eventCallbacks[event]) {
       this.eventCallbacks[event].forEach(cb => {
-        try { cb(data); } catch (e) { console.error(e); }
+        try { cb(data); } catch (e) { console.error('[TacticalNetwork Event Error]', e); }
       });
     }
   }
