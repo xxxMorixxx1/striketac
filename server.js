@@ -568,20 +568,38 @@ function getLocalIpAddresses() {
   return addresses;
 }
 
-server.listen(PORT, '0.0.0.0', () => {
+const targetPort = parseInt(PORT, 10);
+server.listen(targetPort, '0.0.0.0', () => {
   const localIps = getLocalIpAddresses();
   console.log(`=======================================================`);
   console.log(`  ⚡ StrikeTac Airsoft Tactical Server запущен!`);
-  console.log(`  Порт: ${PORT}`);
-  console.log(`  На этом ПК: http://localhost:${PORT}`);
+  console.log(`  Основной порт: ${targetPort}`);
+  console.log(`  На этом ПК: http://localhost:${targetPort}`);
   if (localIps.length > 0) {
     console.log(`  Для телефонов (Wi-Fi / локальная сеть):`);
     localIps.forEach(net => {
-      console.log(`    → [${net.name}]: http://${net.address}:${PORT}`);
+      console.log(`    → [${net.name}]: http://${net.address}:${targetPort}`);
     });
   } else {
-    console.log(`  В сети:     http://0.0.0.0:${PORT}`);
+    console.log(`  В сети:     http://0.0.0.0:${targetPort}`);
   }
   console.log(`=======================================================`);
 });
+
+// Универсальная совместимость с Envoy / Nginx / Amvera / Docker
+const extraPorts = [80, 3000].filter(p => p !== targetPort);
+for (const p of extraPorts) {
+  try {
+    const extraServer = http.createServer(app);
+    io.attach(extraServer);
+    extraServer.on('error', () => {
+      // Игнорируем EACCES (если нет прав root) или EADDRINUSE
+    });
+    extraServer.listen(p, '0.0.0.0', () => {
+      console.log(`  Дополнительный облачный порт активен: ${p}`);
+    });
+  } catch (e) {
+    // игнорируем
+  }
+}
 
